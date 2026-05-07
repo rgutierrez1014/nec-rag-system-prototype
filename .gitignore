@@ -179,3 +179,76 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# internal docs
+docs/internal
+
+# NPI data files (large CSVs, don't commit to repo)
+data/raw/
+*.csv
+
+# Extracted resource content (local cache, regenerable)
+data/extracted/
+
+# Ollama model files (downloaded at runtime)
+.ollama/
+
+# Node.js (for the Next.js frontend)
+node_modules/
+.next/
+out/
+
+# Docker
+docker-compose.override.yml
+
+# OS
+.DS_Store
+*.pem
+
+# Playwright browsers (downloaded at install time)
+playwright-browsers/
+
+# LangSmith local traces
+.langsmith/
+
+# blog posts
+posts
+
+# Git worktrees
+.worktrees/
+
+# Local knowledge base
+knowledge-base
+knowledge_base
+
+# Superpowers local server
+.superpowers
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# utils for shadcn
+!/apps/frontend/src/lib
+!/apps/frontend/src/lib/**
+
+# GCP credential files
+client_secrets_*
+
+.env.cloudflare
