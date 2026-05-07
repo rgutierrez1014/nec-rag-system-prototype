@@ -464,6 +464,18 @@ The gap between chunks retrieved and chunks cited is a diagnostic signal. If the
 
 Log format is JSON, compatible with LangSmith import for combined analysis.
 
+### Where model observability lives
+
+The cross-encoder (sentence-transformers) and PII models (Presidio + spaCy) are Python libraries loaded directly into the FastAPI process — they are not separate services. Their errors, timing, and debug output are part of FastAPI's structured logs. In production, these appear in Dozzle alongside all other FastAPI container logs.
+
+Ollama runs as a system service on the VPS, outside Docker. Its logs are accessible via `journalctl -u ollama` but are rarely needed — Ollama is a stateless embedding service that receives requests and returns vectors. The meaningful observability for embeddings (which queries were embedded, latency, dimension validation) is captured by the FastAPI code that calls Ollama, not by Ollama itself.
+
+LangSmith provides the high-level model observability: full query pipeline traces showing what was retrieved, similarity scores, the prompt sent to the synthesis model, and the response returned. This is the primary tool for understanding model behavior — structured logs capture the operational data, LangSmith captures the semantic data.
+
+### Production observability migration
+
+The prototype uses LangSmith + structured JSON logs to stdout (captured by Docker). In production on GCP, this migrates to Fluent Bit + OpenTelemetry → Google Cloud Logging, providing centralized log aggregation, trace correlation, and alerting. The structured JSON format is designed to be compatible with both approaches — the migration changes where logs are shipped, not how they are produced. This is deferred to the production migration phase.
+
 ---
 
 ## Frontend
