@@ -166,14 +166,14 @@ Both use the existing wildcard Cloudflare origin certificate (`*.ndequity.org`).
 
 ### Verification
 
-- [ ] SSH access to VPS works
-- [ ] Dokploy dashboard is accessible at `dokploy-search.ndequity.org` with valid Cloudflare cert
-- [ ] `search.ndequity.org` and `dokploy-search.ndequity.org` A records resolve to VPS IP
-- [ ] `curl -I https://dokploy-search.ndequity.org` shows Cloudflare cert (not Traefik self-signed)
-- [ ] `search.ndequity.org` will return a Cloudflare 525 SSL handshake error at this stage — that's expected. Traefik has no router for it yet since nothing is deployed. It will resolve in Step 3 when the app is deployed and Dokploy configures the router.
-- [ ] Dokploy is watching the `production` branch
-- [ ] `ollama list` on VPS shows `nomic-embed-text`
-- [ ] Ollama embedding endpoint returns a 768-dim vector
+- [x] SSH access to VPS works
+- [x] Dokploy dashboard is accessible at `dokploy-search.ndequity.org` with valid Cloudflare cert
+- [x] `search.ndequity.org` and `dokploy-search.ndequity.org` A records resolve to VPS IP
+- [x] `curl -I https://dokploy-search.ndequity.org` shows Cloudflare cert (not Traefik self-signed)
+- [x] `search.ndequity.org` will return a Cloudflare 525 SSL handshake error at this stage — that's expected. Traefik has no router for it yet since nothing is deployed. It will resolve in Step 3 when the app is deployed and Dokploy configures the router.
+- [x] Dokploy is watching the `production` branch
+- [x] `ollama list` on VPS shows `nomic-embed-text`
+- [x] Ollama embedding endpoint returns a 768-dim vector
 
 Note: SSH tunnel verification happens in Step 2 via `make tunnel`, which forwards ports 5432 (Postgres), 11434 (Ollama), and 9999 (Dozzle).
 
@@ -864,7 +864,7 @@ def test_insert_and_query_vector(db_conn):
 
 ## Completion Checklist
 
-- [ ] Step 1: Provision Hetzner VPS and configure Dokploy
+- [x] Step 1: Provision Hetzner VPS and configure Dokploy
 - [ ] Step 2: Project skeleton, dependencies, and Makefile
 - [ ] Step 3: Docker Compose for VPS services
 - [ ] Step 4: Database schema
