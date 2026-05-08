@@ -170,6 +170,7 @@ Both use the existing wildcard Cloudflare origin certificate (`*.ndequity.org`).
 - [ ] Dokploy dashboard is accessible at `dokploy-search.ndequity.org` with valid Cloudflare cert
 - [ ] `search.ndequity.org` and `dokploy-search.ndequity.org` A records resolve to VPS IP
 - [ ] `curl -I https://dokploy-search.ndequity.org` shows Cloudflare cert (not Traefik self-signed)
+- [ ] `search.ndequity.org` will return a Cloudflare 525 SSL handshake error at this stage — that's expected. Traefik has no router for it yet since nothing is deployed. It will resolve in Step 3 when the app is deployed and Dokploy configures the router.
 - [ ] Dokploy is watching the `production` branch
 - [ ] `ollama list` on VPS shows `nomic-embed-text`
 - [ ] Ollama embedding endpoint returns a 768-dim vector
