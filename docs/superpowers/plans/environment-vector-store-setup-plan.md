@@ -397,6 +397,8 @@ Key Makefile design decisions:
 - **`make status`** — quick check of what's running.
 - **`make setup-api`** — one-time venv creation and dependency install.
 - **`make verify`** and **`make test`** — run verification and tests using the venv's Python.
+
+**Deviations:** `setup-api` uses `python3` instead of `python` — no pyenv or version manager installed; Homebrew Python 3.11.4 is at `/usr/local/bin/python3`. Tunnel/status/stop-dev verifications deferred to Step 3/4 when VPS and app are in place.
 - **`make logs`** — opens log files in `lnav` if installed (`brew install lnav`), falls back to `tail -f`. lnav provides syntax highlighting, filtering, and multi-file navigation.
 
 ### .gitignore additions
@@ -411,12 +413,12 @@ Add to the existing `.gitignore`:
 
 ### Verification
 
-- [ ] `make setup-api` creates the venv and installs dependencies
-- [ ] `cd api && .venv/bin/python -c "from db.connection import get_connection"` imports without error
-- [ ] `make start-dev` starts the tunnel and API (API will fail until Step 4 creates `orchestration/app.py` — that's expected)
-- [ ] `make status` shows tunnel as running
-- [ ] `make stop-dev` cleans everything up
-- [ ] `make status` shows all stopped
+- [x] `make setup-api` creates the venv and installs dependencies
+- [x] `cd api && .venv/bin/python -c "from db.connection import get_connection"` imports without error
+- [x] `make start-dev` starts the tunnel and API (API will fail until Step 4 creates `orchestration/app.py` — that's expected)
+- [x] `make status` shows tunnel as running
+- [x] `make stop-dev` cleans everything up
+- [x] `make status` shows all stopped
 
 ---
 
@@ -865,7 +867,7 @@ def test_insert_and_query_vector(db_conn):
 ## Completion Checklist
 
 - [x] Step 1: Provision Hetzner VPS and configure Dokploy
-- [ ] Step 2: Project skeleton, dependencies, and Makefile
+- [x] Step 2: Project skeleton, dependencies, and Makefile
 - [ ] Step 3: Docker Compose for VPS services
 - [ ] Step 4: Database schema
 - [ ] Step 5: End-to-end verification script
