@@ -79,9 +79,15 @@ Two tables in prototype scope:
 
 ## Step 1: Provision Hetzner VPS and Configure Dokploy
 
-**What:** Provision the Hetzner CX33 VPS, install Dokploy, set up Ollama, and configure SSH access. This is manual infrastructure work done once.
+**What:** Provision the Hetzner CX33 VPS, install Dokploy, wire up the Cloudflare origin certificate to Traefik, set up Ollama, and configure SSH access. This is manual infrastructure work done once.
 
 **Why:** The VPS hosts all the heavy services (Postgres, Ollama) permanently. Both local development and deployed production connect to these same services. Getting the VPS running first means everything else has infrastructure to talk to.
+
+Two subdomains are exposed from this VPS:
+- `search.ndequity.org` — the RAG API (and demo frontend in Step 9)
+- `dokploy-search.ndequity.org` — the Dokploy dashboard
+
+Both use the existing wildcard Cloudflare origin certificate (`*.ndequity.org`). See `docs/traefik-cloudflare-cert-setup.md` for the full cert wiring guide — the steps below summarize the relevant parts.
 
 ### Instructions
 
@@ -97,24 +103,62 @@ Two tables in prototype scope:
    curl -sSL https://dokploy.com/install.sh | sh
    ```
 
-3. **Access Dokploy dashboard:**
+3. **Access Dokploy dashboard and configure the project:**
    - Navigate to `http://<vps-ip>:3000` in your browser
    - Create your admin account
-   - Configure a project for the RAG service
+   - In **Settings → General**, set the Dokploy dashboard domain to `dokploy-search.ndequity.org`
+   - Create a project for the RAG service
    - Set up Dokploy to watch the `production` branch of the repository
 
 4. **Configure Cloudflare DNS:**
-   - Add an A record pointing your prototype subdomain to the VPS IP
-   - Enable Cloudflare proxy (orange cloud) for DDoS protection
-   - SSL mode: Full (strict) if using Dokploy's built-in Let's Encrypt, or Flexible if terminating at Cloudflare
+   - Add A records for both `search.ndequity.org` and `dokploy-search.ndequity.org` pointing to the VPS IP
+   - Enable Cloudflare proxy (orange cloud) on both records
+   - SSL mode: **Full (strict)** — the origin cert handles this end-to-end
 
-5. **Install Ollama directly on the VPS** (not in Docker — it's a persistent system service):
+5. **Wire up the Cloudflare origin certificate to Traefik:**
+
+   a. In **Dokploy UI → Settings → Certificates**, upload the existing `*.ndequity.org` Cloudflare origin cert (PEM + private key).
+
+   b. SSH into the VPS and find the cert filenames Dokploy created:
+   ```bash
+   ls -la /etc/dokploy/traefik/dynamic/certificates/
+   ```
+
+   c. In **Dokploy UI → Advanced → Traefik**, verify the static config has a file provider:
+   ```yaml
+   providers:
+     file:
+       directory: /etc/dokploy/traefik/dynamic
+       watch: true
+   ```
+   Add it if missing and restart the Traefik container from the UI.
+
+   d. On the VPS, create `/etc/dokploy/traefik/dynamic/default-cert.yml`:
+   ```yaml
+   tls:
+     stores:
+       default:
+         defaultCertificate:
+           certFile: /etc/dokploy/traefik/dynamic/certificates/<your-cert-filename>.crt
+           keyFile: /etc/dokploy/traefik/dynamic/certificates/<your-cert-filename>.key
+   ```
+   Traefik picks this up automatically — no restart needed.
+
+   e. Verify the cert is live:
+   ```bash
+   curl -I https://dokploy-search.ndequity.org
+   ```
+   The issuer should be "Cloudflare Inc ECC CA-3", not "TRAEFIK DEFAULT CERT".
+
+   > **Note:** The `docker-compose.yml` in Step 3 is for infrastructure services only (Postgres, Dozzle) — neither needs Traefik labels. The FastAPI app's routing to `search.ndequity.org` is configured in Dokploy's service settings when deploying the app (set the domain there; Dokploy injects the Traefik labels automatically).
+
+6. **Install Ollama directly on the VPS** (not in Docker — it's a persistent system service):
    ```bash
    curl -fsSL https://ollama.com/install.sh | sh
    ollama pull nomic-embed-text
    ```
 
-6. **Verify Ollama is running:**
+7. **Verify Ollama is running:**
    ```bash
    curl http://localhost:11434/api/embeddings -d '{"model": "nomic-embed-text", "prompt": "search_document: test"}'
    ```
@@ -123,8 +167,10 @@ Two tables in prototype scope:
 ### Verification
 
 - [ ] SSH access to VPS works
-- [ ] Dokploy dashboard is accessible and watching the production branch
-- [ ] Cloudflare DNS resolves to VPS
+- [ ] Dokploy dashboard is accessible at `dokploy-search.ndequity.org` with valid Cloudflare cert
+- [ ] `search.ndequity.org` and `dokploy-search.ndequity.org` A records resolve to VPS IP
+- [ ] `curl -I https://dokploy-search.ndequity.org` shows Cloudflare cert (not Traefik self-signed)
+- [ ] Dokploy is watching the `production` branch
 - [ ] `ollama list` on VPS shows `nomic-embed-text`
 - [ ] Ollama embedding endpoint returns a 768-dim vector
 
@@ -420,6 +466,7 @@ Key design decisions:
 - **`restart: unless-stopped`** — both services come back up after VPS reboots.
 - **`./api/db/schema.sql`** — the schema file lives in the `api/` subtree but is mounted from the repo root where `docker-compose.yml` lives.
 - **No Ollama in Compose** — Ollama is installed as a system service (Step 1) since it's a persistent, shared service. Keeping it outside Docker avoids a container-in-container layer and simplifies model management.
+- **No Traefik labels here** — `db` and `dozzle` are internal services, not publicly routed. The FastAPI app's domain (`search.ndequity.org`) is configured in Dokploy's service UI when the app is deployed; Dokploy injects Traefik labels automatically. See `docs/traefik-cloudflare-cert-setup.md` for the label pattern if manual configuration is needed.
 - **`POSTGRES_PASSWORD` has no default** — forces setting a real password via `.env` on the VPS. The `.env.example` provides `localdev` as guidance but the Compose file won't start without an explicit value.
 - The schema SQL file is mounted into Postgres's `docker-entrypoint-initdb.d/` so tables are created automatically on first `docker compose up`.
 
