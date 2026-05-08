@@ -1,0 +1,16 @@
+# Core
+fastapi==0.115.*
+uvicorn[standard]==0.34.*
+psycopg2-binary==2.9.*
+pgvector==0.3.*
+httpx==0.28.*
+
+# Embeddings and ML (Step 5 will add sentence-transformers, rank-bm25)
+# Listed here as comments for visibility; install when needed
+
+# PII (Step 6 will add presidio-analyzer, spacy)
+
+# Observability (Step 4 will add langsmith)
+
+# Anthropic (Step 4)
+# anthropic==0.*
