@@ -669,8 +669,13 @@ if __name__ == "__main__":
 
 ## Completion Checklist
 
-- [ ] Step 1: Add yoyo-migrations and create initial migration
-- [ ] Step 2: Database setup script and Makefile targets
-- [ ] Step 3: Test database lifecycle (conftest.py)
-- [ ] Step 4: End-to-end verification script
-- [ ] Step 5: Deploy updated docker-compose and initialize databases
+- [x] Step 1: Add yoyo-migrations and create initial migration
+- [x] Step 2: Database setup script and Makefile targets
+- [x] Step 3: Test database lifecycle (conftest.py)
+- [x] Step 4: End-to-end verification script
+- [x] Step 5: Deploy updated docker-compose and initialize databases
+
+## Deviations from plan (discovered during implementation)
+
+- **`::vector` cast required on similarity queries** — psycopg2 sends Python lists as `numeric[]`, not `vector`, so the `<=>` operator fails without an explicit `::vector` cast on the parameter. Added `%s::vector` in `verify_setup.py` and `test_verify_setup.py`. This will apply to all similarity queries in future steps.
+- **`pg_terminate_backend` required before DROP DATABASE in conftest teardown** — yoyo holds a connection open after applying migrations. Without terminating active sessions first, `DROP DATABASE IF EXISTS nec_rag_test` fails with "database is being accessed by other users". Added a `pg_terminate_backend` call targeting `nec_rag_test` before the drop.

@@ -495,4 +495,4 @@ Add to the existing `.gitignore`:
 
 - [x] Step 1: Provision Hetzner VPS and configure Dokploy
 - [x] Step 2: Project skeleton, dependencies, and Makefile
-- [ ] Step 3: Three-database isolation (see [implementation plan](2026-05-10-three-database-isolation-plan.md))
+- [x] Step 3: Three-database isolation (see [implementation plan](2026-05-10-three-database-isolation-plan.md))
