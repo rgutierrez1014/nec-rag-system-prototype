@@ -422,422 +422,47 @@ Add to the existing `.gitignore`:
 
 ---
 
-## Step 3: Docker Compose for VPS Services
+## Step 3: Three-Database Isolation (Docker Compose, Schema, Migrations, Verification)
 
-**What:** Create a `docker-compose.yml` that runs Postgres + pgvector on the VPS. This is the single database instance used by both local development (via SSH tunnel) and the deployed production app.
+**What:** Deploy docker-compose, set up three isolated databases via yoyo-migrations, create the verification script and test suite. This step supersedes the original Steps 3–5 by integrating database isolation from the start.
 
-**Why:** Postgres needs to be always-running on the VPS. Docker Compose makes it reproducible and manageable. Ollama is already installed as a system service in Step 1 — it doesn't need to be in the Compose file.
+**Why:** Rather than creating a single shared database and retrofitting isolation later, we do it right the first time: `nec_rag` (production), `nec_rag_dev` (local development), `nec_rag_test` (test suite). Schema is managed as numbered SQL migration files via yoyo-migrations.
 
-### Files to create
+**Implementation:** See [`2026-05-10-three-database-isolation-plan.md`](2026-05-10-three-database-isolation-plan.md) for the full 5-step implementation plan with file contents, verification checklists, and test code.
 
-**`docker-compose.yml`**
-```yaml
-services:
-  db:
-    image: pgvector/pgvector:pg16
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-nec_rag}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB:-nec_rag}
-    ports:
-      - "127.0.0.1:5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./api/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nec_rag}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+### Summary of what gets created
 
-  dozzle:
-    image: amir20/dozzle:latest
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:9999:8080"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+| File | Description |
+|------|-------------|
+| `api/db/migrations/0001_initial.sql` | Initial schema (practices + resource_chunks tables, HNSW indexes) |
+| `api/scripts/setup_db.py` | Creates databases and applies yoyo migrations |
+| `api/scripts/__init__.py` | Empty package init |
+| `api/scripts/verify_setup.py` | End-to-end Ollama → pgvector round-trip verification |
+| `api/tests/conftest.py` | Session fixture for test DB lifecycle + `db_conn` fixture |
+| `api/tests/test_verify_setup.py` | Integration tests for schema and vector operations |
 
-volumes:
-  pgdata:
-```
+| File | Change |
+|------|--------|
+| `api/requirements.txt` | Add `yoyo-migrations==8.*` |
+| `.env.example` | `POSTGRES_DB=nec_rag_dev` (was `nec_rag`) |
+| `Makefile` | Add `setup-db`, `apply-migrations` targets; update `test` with tunnel reminder |
+| `docker-compose.yml` | Remove `schema.sql` init mount |
 
-Key design decisions:
-- **`127.0.0.1:5432:5432`** — binds Postgres to localhost only. Not exposed to the public internet. Local development reaches it via SSH tunnel.
-- **`127.0.0.1:9999:8080`** — Dozzle bound to localhost only. Access via SSH tunnel at `http://localhost:9999`. Shows combined logs from all Docker containers on the VPS (Postgres now, deployed FastAPI later). ~15MB image, negligible CPU/RAM.
-- **`restart: unless-stopped`** — both services come back up after VPS reboots.
-- **`./api/db/schema.sql`** — the schema file lives in the `api/` subtree but is mounted from the repo root where `docker-compose.yml` lives.
-- **No Ollama in Compose** — Ollama is installed as a system service (Step 1) since it's a persistent, shared service. Keeping it outside Docker avoids a container-in-container layer and simplifies model management.
-- **No Traefik labels here** — `db` and `dozzle` are internal services, not publicly routed. The FastAPI app's domain (`search.ndequity.org`) is configured in Dokploy's service UI when the app is deployed; Dokploy injects Traefik labels automatically. See `docs/traefik-cloudflare-cert-setup.md` for the label pattern if manual configuration is needed.
-- **`POSTGRES_PASSWORD` has no default** — forces setting a real password via `.env` on the VPS. The `.env.example` provides `localdev` as guidance but the Compose file won't start without an explicit value.
-- The schema SQL file is mounted into Postgres's `docker-entrypoint-initdb.d/` so tables are created automatically on first `docker compose up`.
+### Key design decisions
 
-### Deploy to VPS
-
-Clone the repo on the VPS (or copy the Compose file and schema), create a `.env` with a real password, and start:
-
-```bash
-ssh root@<vps-ip>
-cd /opt/nec-rag  # or wherever you prefer
-git clone <repo-url> .
-cp .env.example .env
-# Edit .env: set a real POSTGRES_PASSWORD and VPS_HOST
-docker compose up -d
-```
+- **No `api/db/schema.sql`** — replaced by `api/db/migrations/0001_initial.sql` with identical SQL content. yoyo tracks which migrations have been applied per-database.
+- **`make setup-db`** — Python script that connects to the `postgres` default DB, creates `nec_rag` and `nec_rag_dev`, then applies all migrations to both.
+- **Test lifecycle (Django-style)** — `conftest.py` creates `nec_rag_test` at session start, applies migrations, yields, then drops it. Per-test rollback isolation.
+- **No `skipif` guard** — if the tunnel isn't open, conftest fails fast with a connection error. Same signal, less boilerplate.
+- **Production migrations** — applied via `entrypoint.sh` on container start (deferred to deployment step). yoyo is idempotent.
 
 ### Verification
 
-Run these on the VPS:
-
-- [ ] `docker compose up -d` starts Postgres without errors
-- [ ] `docker compose exec db psql -U nec_rag -c "SELECT 1"` returns 1
-- [ ] `docker compose exec db psql -U nec_rag -c "SELECT extversion FROM pg_extension WHERE extname = 'vector';"` shows the pgvector version
-
-Then from your local Mac (with `make tunnel` or `make start-dev`):
-
-- [ ] `psql -h localhost -U nec_rag -c "SELECT 1"` connects through the tunnel
-- [ ] `http://localhost:9999` opens Dozzle and shows the `db` container logs
-
----
-
-## Step 4: Database Schema
-
-**What:** Write the SQL schema for the `practices` and `resource_chunks` tables with pgvector columns, HNSW indexes, and metadata columns.
-
-**Why:** The schema is the foundation for all ingestion (Steps 2-3) and retrieval (Step 5). Getting the column types, constraints, and indexes right now avoids migrations later.
-
-### Files to create
-
-**`api/db/schema.sql`**
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-
--- Practices: one row per provider practice (from NPI data)
-CREATE TABLE IF NOT EXISTS practices (
-    id SERIAL PRIMARY KEY,
-    npi_number VARCHAR(10) UNIQUE NOT NULL,
-
-    -- Practice identity
-    name TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    practice_type VARCHAR(20) NOT NULL DEFAULT 'healthcare',
-
-    -- Address
-    address_1 TEXT NOT NULL DEFAULT '',
-    address_city VARCHAR(100) NOT NULL DEFAULT '',
-    address_state VARCHAR(2) NOT NULL DEFAULT '',
-    address_zip VARCHAR(10) NOT NULL DEFAULT '',
-
-    -- Structured metadata (filterable)
-    services TEXT[] NOT NULL DEFAULT '{}',
-    specialties TEXT[] NOT NULL DEFAULT '{}',
-    presence_types TEXT[] NOT NULL DEFAULT '{}',
-
-    -- Professional roster
-    professionals JSONB NOT NULL DEFAULT '[]',
-
-    -- Embedding
-    embedding vector(768),
-    embedding_model VARCHAR(100),
-
-    -- Timestamps
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- HNSW index for vector similarity search (cosine distance)
-CREATE INDEX IF NOT EXISTS practices_embedding_idx
-    ON practices USING hnsw (embedding vector_cosine_ops);
-
--- Filter indexes
-CREATE INDEX IF NOT EXISTS practices_zip_idx ON practices (address_zip);
-CREATE INDEX IF NOT EXISTS practices_services_idx ON practices USING gin (services);
-CREATE INDEX IF NOT EXISTS practices_specialties_idx ON practices USING gin (specialties);
-
-
--- Resource chunks: one row per chunk of a curated resource page
-CREATE TABLE IF NOT EXISTS resource_chunks (
-    id SERIAL PRIMARY KEY,
-    content_hash VARCHAR(64) UNIQUE NOT NULL,
-
-    -- Source metadata
-    source_url TEXT NOT NULL,
-    org_name TEXT NOT NULL DEFAULT '',
-    page_title TEXT NOT NULL DEFAULT '',
-    county_scope VARCHAR(50) NOT NULL DEFAULT 'national',
-    fetch_date DATE,
-
-    -- Content
-    content TEXT NOT NULL,
-    chunk_index INTEGER NOT NULL DEFAULT 0,
-    section_header TEXT NOT NULL DEFAULT '',
-
-    -- Embedding
-    embedding vector(768),
-    embedding_model VARCHAR(100),
-
-    -- Timestamps
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- HNSW index for vector similarity search (cosine distance)
-CREATE INDEX IF NOT EXISTS resource_chunks_embedding_idx
-    ON resource_chunks USING hnsw (embedding vector_cosine_ops);
-
--- Lookup indexes
-CREATE INDEX IF NOT EXISTS resource_chunks_source_url_idx ON resource_chunks (source_url);
-CREATE INDEX IF NOT EXISTS resource_chunks_county_scope_idx ON resource_chunks (county_scope);
-```
-
-### Schema design notes
-
-- **`npi_number` as unique key on practices** — ingestion upserts on this. Matches the spec: "idempotent — re-running on already-ingested data produces no duplicate records."
-- **`content_hash` as unique key on resource_chunks** — ingestion upserts on content hash. Matches the spec: "upsert on content hash."
-- **`services`, `specialties`, `presence_types` as `TEXT[]`** — matches the NEC platform's `ChoiceArrayField` pattern where these are stored as slug arrays. GIN indexes support `@>` (contains) and `&&` (overlap) operators for filtering.
-- **`professionals` as JSONB** — array of `{name, title, credentials}` objects. Stored as structured data for display but not individually searchable.
-- **`embedding_model VARCHAR(100)`** — stores the model version string (e.g., `nomic-embed-text:v1.5`). Required for re-embed safety per the spec.
-- **`section_header` on resource_chunks** — the spec says chunks get "the section heading prepended." Storing it separately lets retrieval use it for display without parsing.
-- **HNSW with `vector_cosine_ops`** — cosine distance is the standard distance metric for nomic-embed-text.
-- **No HNSW tuning parameters specified** — pgvector's defaults (`m=16`, `ef_construction=64`) are reasonable for the prototype's data volume (hundreds to low thousands of records). Tuning comes in Step 5 if retrieval latency targets aren't met.
-
-### Verification
-
-Run these on the VPS (reset the database to pick up the schema):
-
-- [ ] `docker compose down -v && docker compose up -d` recreates the database with the schema
-- [ ] `docker compose exec db psql -U nec_rag -c "\dt"` shows both tables
-- [ ] `docker compose exec db psql -U nec_rag -c "\di"` shows all indexes including HNSW indexes
-- [ ] `docker compose exec db psql -U nec_rag -c "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'practices' ORDER BY ordinal_position;"` shows expected columns
-
----
-
-## Step 5: End-to-End Verification Script
-
-**What:** Write a Python script that generates an embedding via Ollama, inserts it into the practices table, queries it back via pgvector similarity search, and confirms the round trip works.
-
-**Why:** This is the acceptance test for the entire step. Run locally with the SSH tunnel open (`make tunnel`) — it confirms your Mac can reach Ollama and Postgres on the VPS, and that the embedding-to-storage pipeline works end-to-end. If this script passes, Steps 2-3 (ingestion) have a proven foundation to build on.
-
-### Files to create
-
-**`api/scripts/__init__.py`** — empty
-
-**`api/scripts/verify_setup.py`**
-```python
-"""
-End-to-end verification: generate an embedding via Ollama, write it to
-pgvector, query it back via similarity search.
-
-Usage:
-    make verify
-
-Requires POSTGRES_* and OLLAMA_BASE_URL env vars (see .env.example).
-"""
-
-import os
-import sys
-
-import httpx
-import psycopg2
-from pgvector.psycopg2 import register_vector
-
-from db.connection import get_connection
-
-
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-embed-text")
-
-
-def generate_embedding(text: str, prefix: str = "search_document") -> list[float]:
-    response = httpx.post(
-        f"{OLLAMA_BASE_URL}/api/embeddings",
-        json={"model": EMBEDDING_MODEL, "prompt": f"{prefix}: {text}"},
-        timeout=30.0,
-    )
-    response.raise_for_status()
-    return response.json()["embedding"]
-
-
-def main():
-    print("1. Connecting to Postgres...")
-    conn = get_connection()
-    register_vector(conn)
-    cur = conn.cursor()
-
-    print("2. Verifying pgvector extension...")
-    cur.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
-    row = cur.fetchone()
-    if not row:
-        print("FAIL: pgvector extension not installed")
-        sys.exit(1)
-    print(f"   pgvector version: {row[0]}")
-
-    print("3. Generating test embedding via Ollama...")
-    test_text = "Occupational therapy practice in San Francisco specializing in sensory integration"
-    embedding = generate_embedding(test_text)
-    dim = len(embedding)
-    print(f"   Embedding dimension: {dim}")
-    if dim != 768:
-        print(f"FAIL: Expected 768 dimensions, got {dim}")
-        sys.exit(1)
-
-    print("4. Inserting test practice record...")
-    cur.execute(
-        """
-        INSERT INTO practices (npi_number, name, description, address_city, address_state,
-                               address_zip, services, embedding, embedding_model)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (npi_number) DO UPDATE SET embedding = EXCLUDED.embedding
-        RETURNING id
-        """,
-        (
-            "0000000001",
-            "Test OT Practice",
-            test_text,
-            "San Francisco",
-            "CA",
-            "94110",
-            ["occupational-therapy"],
-            embedding,
-            EMBEDDING_MODEL,
-        ),
-    )
-    record_id = cur.fetchone()[0]
-    conn.commit()
-    print(f"   Inserted practice id={record_id}")
-
-    print("5. Querying via similarity search...")
-    query_text = "OT for kids with sensory issues"
-    query_embedding = generate_embedding(query_text, prefix="search_query")
-    cur.execute(
-        """
-        SELECT id, name, 1 - (embedding <=> %s) AS similarity
-        FROM practices
-        ORDER BY embedding <=> %s
-        LIMIT 5
-        """,
-        (query_embedding, query_embedding),
-    )
-    results = cur.fetchall()
-    print(f"   Found {len(results)} results:")
-    for row in results:
-        print(f"     id={row[0]} name={row[1]!r} similarity={row[2]:.4f}")
-
-    print("6. Cleaning up test data...")
-    cur.execute("DELETE FROM practices WHERE npi_number = '0000000001'")
-    conn.commit()
-
-    cur.close()
-    conn.close()
-
-    print("\nAll checks passed.")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-### Test
-
-**`api/tests/test_verify_setup.py`**
-```python
-"""
-Integration test for the embedding-to-storage pipeline.
-Requires running Postgres + pgvector (via SSH tunnel or localhost).
-"""
-
-import os
-
-import pytest
-from pgvector.psycopg2 import register_vector
-
-from db.connection import get_connection
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("POSTGRES_HOST"),
-    reason="Requires running Postgres (set POSTGRES_HOST)",
-)
-
-
-@pytest.fixture
-def db_conn():
-    conn = get_connection()
-    register_vector(conn)
-    yield conn
-    conn.rollback()
-    conn.close()
-
-
-def test_pgvector_extension_installed(db_conn):
-    cur = db_conn.cursor()
-    cur.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
-    row = cur.fetchone()
-    assert row is not None, "pgvector extension not installed"
-
-
-def test_practices_table_exists(db_conn):
-    cur = db_conn.cursor()
-    cur.execute(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'practices')"
-    )
-    assert cur.fetchone()[0] is True
-
-
-def test_resource_chunks_table_exists(db_conn):
-    cur = db_conn.cursor()
-    cur.execute(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'resource_chunks')"
-    )
-    assert cur.fetchone()[0] is True
-
-
-def test_practices_embedding_column_is_768(db_conn):
-    cur = db_conn.cursor()
-    cur.execute("""
-        SELECT atttypmod FROM pg_attribute
-        JOIN pg_class ON pg_attribute.attrelid = pg_class.oid
-        WHERE pg_class.relname = 'practices' AND pg_attribute.attname = 'embedding'
-    """)
-    row = cur.fetchone()
-    assert row is not None
-    assert row[0] == 768, f"Expected vector(768), got vector({row[0]})"
-
-
-def test_insert_and_query_vector(db_conn):
-    cur = db_conn.cursor()
-    fake_embedding = [0.1] * 768
-
-    cur.execute(
-        """
-        INSERT INTO practices (npi_number, name, embedding, embedding_model)
-        VALUES ('9999999999', 'Test Practice', %s, 'test-model')
-        ON CONFLICT (npi_number) DO UPDATE SET embedding = EXCLUDED.embedding
-        RETURNING id
-        """,
-        (fake_embedding,),
-    )
-    record_id = cur.fetchone()[0]
-    assert record_id is not None
-
-    cur.execute(
-        """
-        SELECT id, name, 1 - (embedding <=> %s) AS similarity
-        FROM practices
-        WHERE id = %s
-        """,
-        (fake_embedding, record_id),
-    )
-    row = cur.fetchone()
-    assert row is not None
-    assert row[2] == pytest.approx(1.0, abs=0.001)
-```
-
-### Verification
-
-- [ ] `make tunnel` establishes the SSH tunnel
+- [ ] `docker compose up -d` on VPS starts Postgres
+- [ ] `make setup-db` creates both databases and applies migrations
 - [ ] `make verify` completes with "All checks passed"
-- [ ] `make test` — all tests pass
+- [ ] `make test` passes all tests (creates/drops `nec_rag_test` automatically)
+- [ ] `http://localhost:9999` opens Dozzle and shows container logs
 
 ---
 
@@ -845,21 +470,23 @@ def test_insert_and_query_vector(db_conn):
 
 | File | Status | Description |
 |------|--------|-------------|
-| `Makefile` | New | Dev lifecycle commands: start-dev, stop-dev, logs, status, setup-api, verify, test |
+| `Makefile` | New | Dev lifecycle commands: start-dev, stop-dev, logs, status, setup-api, setup-db, apply-migrations, verify, test |
 | `.env.example` | New | Template for environment variables (VPS connection, Postgres, Ollama) |
 | `.env` | New | Local env vars with real VPS IP (gitignored) |
-| `docker-compose.yml` | New | VPS services: Postgres + pgvector (Ollama installed separately as system service) |
-| `api/requirements.txt` | New | Python dependencies (FastAPI, psycopg2, pgvector, httpx, uvicorn) |
+| `docker-compose.yml` | New | VPS services: Postgres + pgvector (no schema init mount — migrations handle schema) |
+| `api/requirements.txt` | New | Python dependencies (FastAPI, psycopg2, pgvector, httpx, uvicorn, yoyo-migrations) |
 | `api/requirements-dev.txt` | New | Dev dependencies (includes requirements.txt + pytest) |
 | `api/db/__init__.py` | New | Empty package init |
-| `api/db/schema.sql` | New | DDL for practices and resource_chunks tables with pgvector indexes |
+| `api/db/migrations/0001_initial.sql` | New | Initial schema (practices + resource_chunks tables, HNSW indexes) |
 | `api/db/connection.py` | New | `get_connection()` function returning psycopg2 connection |
 | `api/ingestion/__init__.py` | New | Empty package init (skeleton for Step 2) |
 | `api/orchestration/__init__.py` | New | Empty package init (skeleton for Step 4) |
 | `api/tasks/__init__.py` | New | Empty package init (skeleton for Step 4) |
 | `api/scripts/__init__.py` | New | Empty package init |
+| `api/scripts/setup_db.py` | New | Creates databases and applies yoyo migrations |
 | `api/scripts/verify_setup.py` | New | End-to-end verification: Ollama → pgvector round trip |
 | `api/tests/__init__.py` | New | Empty package init |
+| `api/tests/conftest.py` | New | Session fixture for test DB lifecycle + `db_conn` fixture |
 | `api/tests/test_verify_setup.py` | New | Integration tests for schema and vector operations |
 
 ---
@@ -868,6 +495,4 @@ def test_insert_and_query_vector(db_conn):
 
 - [x] Step 1: Provision Hetzner VPS and configure Dokploy
 - [x] Step 2: Project skeleton, dependencies, and Makefile
-- [ ] Step 3: Docker Compose for VPS services
-- [ ] Step 4: Database schema
-- [ ] Step 5: End-to-end verification script
+- [ ] Step 3: Three-database isolation (see [implementation plan](2026-05-10-three-database-isolation-plan.md))
