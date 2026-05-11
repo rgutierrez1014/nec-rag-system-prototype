@@ -1,6 +1,28 @@
 # nec-rag-system-prototype
 
-AI-powered natural language search for the Neurodivergent Equity Coalition platform. A FastAPI RAG service scoped to San Francisco County, backed by Postgres + pgvector and Ollama embeddings. The API is the product — the Next.js frontend (coming in a later step) is a demo client.
+An AI-powered natural language search for the Neurodivergent Equity Coalition platform. A FastAPI RAG service prototype backed by Postgres + pgvector and Ollama embeddings.
+
+This prototype is scoped to San Francisco County, containing NPI data for the county as well as curated resources from local ND and disability organizations and other relevant resources from a national/non-scoped level.
+
+## Architecture
+
+Instead of a more traditional Docker Compose setup, this project utilizes a combination of locally venv-ed backend and frontend, plus Ollama and postgres and dozzle persisting on the VPS and tunneled for local use. This was done to save on memory; I'm on a 10 year old Macbook and doubt my computer's capability to run normal apps plus the models needed for this.
+
+```
+Ollama + nomic-embed-text   > VPS (tunnel)
+Postgres db                 > VPS (tunnel)
+Dozzle (combined logs)      > VPS (tunnel)
+FastAPI                     > Local (venv)
+NextJS                      > Local (venv)
+```
+
+The Postgres db gets a separate database per use
+
+```
+nec_rag             > Prod DB
+nec_rag_dev         > Dev DB
+nec_rag_test        > Test DB (spun up and torn down every test run)
+```
 
 ## Prerequisites
 
