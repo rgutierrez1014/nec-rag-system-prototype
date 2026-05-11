@@ -4,30 +4,52 @@ export
 PIDS_DIR := .pids
 LOGS_DIR := .logs
 
-.PHONY: start-dev stop-dev logs tunnel api frontend status setup-api setup-db apply-migrations verify test
+# Shell snippet used by tunnel-kill, tunnel-restart, and stop-dev.
+# Kills tunnel via pid file first, then falls back to pgrep for strays.
+define TUNNEL_KILL_CMDS
+	@if [ -f $(PIDS_DIR)/tunnel.pid ]; then \
+		pid=$$(cat $(PIDS_DIR)/tunnel.pid); \
+		kill $$pid 2>/dev/null && echo "  Killed SSH tunnel (PID $$pid from .pids file)"; \
+		rm -f $(PIDS_DIR)/tunnel.pid; \
+	fi
+	@pids=$$(pgrep -f "ssh.*-N.*$(VPS_HOST)" 2>/dev/null || true); \
+	if [ -n "$$pids" ]; then \
+		echo $$pids | xargs kill 2>/dev/null || true; \
+		echo "  Killed stray SSH tunnel processes: $$pids"; \
+		rm -f $(PIDS_DIR)/tunnel.pid; \
+	fi
+endef
+
+define API_KILL_CMDS
+	@if [ -f $(PIDS_DIR)/api.pid ]; then \
+		pid=$$(cat $(PIDS_DIR)/api.pid); \
+		kill $$pid 2>/dev/null && echo "  Killed API (PID $$pid from .pids file)"; \
+		rm -f $(PIDS_DIR)/api.pid; \
+	fi
+	@pids=$$(pgrep -f "uvicorn orchestration.app:app" 2>/dev/null || true); \
+	if [ -n "$$pids" ]; then \
+		echo $$pids | xargs kill 2>/dev/null || true; \
+		echo "  Killed stray API processes: $$pids"; \
+		rm -f $(PIDS_DIR)/api.pid; \
+	fi
+endef
+
+.PHONY: start-dev stop-dev logs tunnel tunnel-kill tunnel-restart api frontend status setup-api setup-db apply-migrations verify test
 
 # ── Dev lifecycle ──────────────────────────────────────────────
 
-start-dev: tunnel api
+start-dev: tunnel-restart api
 	@echo "Dev environment running. Use 'make logs' to tail output, 'make stop-dev' to shut down."
 
 stop-dev:
 	@echo "Stopping dev environment..."
-	@if [ -f $(PIDS_DIR)/api.pid ]; then \
-		kill $$(cat $(PIDS_DIR)/api.pid) 2>/dev/null; \
-		rm $(PIDS_DIR)/api.pid; \
-		echo "  Stopped API"; \
-	fi
+	$(API_KILL_CMDS)
 	@if [ -f $(PIDS_DIR)/frontend.pid ]; then \
 		kill $$(cat $(PIDS_DIR)/frontend.pid) 2>/dev/null; \
 		rm $(PIDS_DIR)/frontend.pid; \
 		echo "  Stopped frontend"; \
 	fi
-	@if [ -f $(PIDS_DIR)/tunnel.pid ]; then \
-		kill $$(cat $(PIDS_DIR)/tunnel.pid) 2>/dev/null; \
-		rm $(PIDS_DIR)/tunnel.pid; \
-		echo "  Stopped SSH tunnel"; \
-	fi
+	$(TUNNEL_KILL_CMDS)
 	@rm -f $(LOGS_DIR)/*.log
 	@echo "Done. Logs cleared."
 
@@ -38,7 +60,7 @@ tunnel:
 	@if [ -f $(PIDS_DIR)/tunnel.pid ] && kill -0 $$(cat $(PIDS_DIR)/tunnel.pid) 2>/dev/null; then \
 		echo "SSH tunnel already running (PID $$(cat $(PIDS_DIR)/tunnel.pid))"; \
 	else \
-		ssh -f -N \
+		ssh -N \
 			-L 5432:localhost:5432 \
 			-L 11434:localhost:11434 \
 			-L 9999:localhost:9999 \
@@ -54,15 +76,25 @@ tunnel:
 		fi \
 	fi
 
+tunnel-kill:
+	$(TUNNEL_KILL_CMDS)
+
+tunnel-restart: tunnel-kill
+	@$(MAKE) tunnel
+
 api:
 	@mkdir -p $(PIDS_DIR) $(LOGS_DIR)
 	@if [ -f $(PIDS_DIR)/api.pid ] && kill -0 $$(cat $(PIDS_DIR)/api.pid) 2>/dev/null; then \
 		echo "API already running (PID $$(cat $(PIDS_DIR)/api.pid))"; \
+	elif pgrep -f "uvicorn orchestration.app:app" >/dev/null 2>&1; then \
+		echo "API already running (PID $$(pgrep -f 'uvicorn orchestration.app:app'))"; \
 	else \
 		cd api && .venv/bin/uvicorn orchestration.app:app --reload --port 8000 \
 			> ../$(LOGS_DIR)/api.log 2>&1 & \
-		echo $$! > $(PIDS_DIR)/api.pid; \
-		echo "API started (PID $$(cat $(PIDS_DIR)/api.pid)) — logs at $(LOGS_DIR)/api.log"; \
+		sleep 1; \
+		pid=$$(pgrep -f "uvicorn orchestration.app:app" | head -1); \
+		echo $$pid > $(PIDS_DIR)/api.pid; \
+		echo "API started (PID $$pid) — logs at $(LOGS_DIR)/api.log"; \
 	fi
 
 frontend:
@@ -93,12 +125,22 @@ status:
 	@if [ -f $(PIDS_DIR)/tunnel.pid ] && kill -0 $$(cat $(PIDS_DIR)/tunnel.pid) 2>/dev/null; then \
 		echo "  SSH tunnel:  running (PID $$(cat $(PIDS_DIR)/tunnel.pid))"; \
 	else \
-		echo "  SSH tunnel:  stopped"; \
+		pids=$$(pgrep -f "ssh.*-N.*$(VPS_HOST)" 2>/dev/null || true); \
+		if [ -n "$$pids" ]; then \
+			echo "  SSH tunnel:  running (PID $$pids) [stale .pids file — run 'make tunnel-restart' to resync]"; \
+		else \
+			echo "  SSH tunnel:  stopped"; \
+		fi \
 	fi
 	@if [ -f $(PIDS_DIR)/api.pid ] && kill -0 $$(cat $(PIDS_DIR)/api.pid) 2>/dev/null; then \
 		echo "  API:         running (PID $$(cat $(PIDS_DIR)/api.pid))"; \
 	else \
-		echo "  API:         stopped"; \
+		pids=$$(pgrep -f "uvicorn orchestration.app:app" 2>/dev/null || true); \
+		if [ -n "$$pids" ]; then \
+			echo "  API:         running (PID $$pids) [stale .pids file — run 'make stop-dev && make start-dev' to resync]"; \
+		else \
+			echo "  API:         stopped"; \
+		fi \
 	fi
 	@if [ -f $(PIDS_DIR)/frontend.pid ] && kill -0 $$(cat $(PIDS_DIR)/frontend.pid) 2>/dev/null; then \
 		echo "  Frontend:    running (PID $$(cat $(PIDS_DIR)/frontend.pid))"; \
