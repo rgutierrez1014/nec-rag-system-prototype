@@ -4,7 +4,7 @@ export
 PIDS_DIR := .pids
 LOGS_DIR := .logs
 
-.PHONY: start-dev stop-dev logs tunnel api frontend status setup-api verify test
+.PHONY: start-dev stop-dev logs tunnel api frontend status setup-api setup-db apply-migrations verify test
 
 # ── Dev lifecycle ──────────────────────────────────────────────
 
@@ -112,8 +112,22 @@ setup-api:
 	cd api && python3 -m venv .venv
 	cd api && .venv/bin/pip install -r requirements-dev.txt
 
+setup-db:
+	@echo "Requires SSH tunnel (make tunnel). Creating databases and applying migrations..."
+	cd api && .venv/bin/python -m scripts.setup_db
+
+apply-migrations:
+	@echo "Applying pending migrations to $(POSTGRES_DB)..."
+	cd api && .venv/bin/python -c "\
+		import os; from yoyo import get_backend, read_migrations; \
+		url = 'postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):$(POSTGRES_PORT)/$(POSTGRES_DB)'; \
+		backend = get_backend(url); migrations = read_migrations('db/migrations'); \
+		backend.lock(); backend.apply_migrations(backend.to_apply(migrations)); \
+		print('Migrations applied to $(POSTGRES_DB)')"
+
 verify:
 	cd api && .venv/bin/python -m scripts.verify_setup
 
 test:
+	@echo "Requires SSH tunnel (make tunnel)."
 	cd api && .venv/bin/pytest tests/ -v
