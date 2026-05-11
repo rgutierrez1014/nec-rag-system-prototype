@@ -176,10 +176,10 @@ POSTGRES_DB=nec_rag_dev
 
 ### Verification
 
-- [ ] `cd api && .venv/bin/pip install -r requirements.txt` installs yoyo-migrations without errors
-- [ ] `api/db/migrations/0001_initial.sql` exists with valid SQL
-- [ ] `docker-compose.yml` has no reference to `schema.sql`
-- [ ] `.env.example` shows `POSTGRES_DB=nec_rag_dev`
+- [x] `cd api && .venv/bin/pip install -r requirements.txt` installs yoyo-migrations without errors
+- [x] `api/db/migrations/0001_initial.sql` exists with valid SQL
+- [x] `docker-compose.yml` has no reference to `schema.sql`
+- [x] `.env.example` shows `POSTGRES_DB=nec_rag_dev`
 
 ---
 
@@ -302,10 +302,10 @@ test:
 
 ### Verification
 
-- [ ] `make tunnel` then `make setup-db` creates both databases and applies migrations
-- [ ] Connect to `nec_rag_dev`: `psql -h localhost -U nec_rag -d nec_rag_dev -c "\dt"` shows both tables
-- [ ] Connect to `nec_rag`: `psql -h localhost -U nec_rag -d nec_rag -c "\dt"` shows both tables
-- [ ] `make apply-migrations` is idempotent (running again shows no errors)
+- [x] `make tunnel` then `make setup-db` creates both databases and applies migrations
+- [x] Connect to `nec_rag_dev`: `psql -h localhost -U nec_rag -d nec_rag_dev -c "\dt"` shows both tables
+- [x] Connect to `nec_rag`: `psql -h localhost -U nec_rag -d nec_rag -c "\dt"` shows both tables
+- [x] `make apply-migrations` is idempotent (running again shows no errors)
 
 ---
 
@@ -474,10 +474,10 @@ Note: The `db_conn` fixture is defined in `conftest.py` and automatically availa
 
 ### Verification
 
-- [ ] `make tunnel` then `make test` passes all tests
-- [ ] During the test run, `nec_rag_test` exists temporarily (can verify via `psql -h localhost -U nec_rag -c "\l"` while tests are running)
-- [ ] After tests complete, `nec_rag_test` is gone (verify via `\l`)
-- [ ] Running `make test` a second time still passes (clean slate each run)
+- [x] `make tunnel` then `make test` passes all tests
+- [x] During the test run, `nec_rag_test` exists temporarily (can verify via `psql -h localhost -U nec_rag -c "\l"` while tests are running)
+- [x] After tests complete, `nec_rag_test` is gone (verify via `\l`)
+- [x] Running `make test` a second time still passes (clean slate each run)
 
 ---
 
@@ -606,8 +606,8 @@ if __name__ == "__main__":
 
 ### Verification
 
-- [ ] `make tunnel` then `make verify` completes with "All checks passed"
-- [ ] The script inserts a record, queries it, and cleans up — no test data left behind
+- [x] `make tunnel` then `make verify` completes with "All checks passed"
+- [x] The script inserts a record, queries it, and cleans up — no test data left behind
 
 ---
 
@@ -635,10 +635,10 @@ if __name__ == "__main__":
 
 ### Verification
 
-- [ ] `docker compose up -d` on VPS starts Postgres without schema.sql mount
-- [ ] `make setup-db` from local Mac creates both databases
-- [ ] `make verify` passes (confirms Ollama + pgvector pipeline with dev database)
-- [ ] `make test` passes (confirms test database lifecycle)
+- [x] `docker compose up -d` on VPS starts Postgres without schema.sql mount
+- [x] `make setup-db` from local Mac creates both databases
+- [x] `make verify` passes (confirms Ollama + pgvector pipeline with dev database)
+- [x] `make test` passes (confirms test database lifecycle)
 
 ---
 
