@@ -23,9 +23,6 @@ POSTGRES_PASSWORD = os.environ["POSTGRES_PASSWORD"]
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
 
-DATABASES = ["nec_rag", "nec_rag_dev"]
-
-
 def create_database_if_not_exists(dbname):
     conn = psycopg2.connect(
         host=POSTGRES_HOST,
@@ -56,14 +53,11 @@ def apply_migrations(dbname):
 
 
 def main():
-    print("Setting up databases...")
-    for dbname in DATABASES:
-        create_database_if_not_exists(dbname)
-
+    target = sys.argv[1] if len(sys.argv) > 1 else "nec_rag_dev"
+    print(f"Setting up database: {target}")
+    create_database_if_not_exists(target)
     print("\nApplying migrations...")
-    for dbname in DATABASES:
-        apply_migrations(dbname)
-
+    apply_migrations(target)
     print("\nDone.")
 
 

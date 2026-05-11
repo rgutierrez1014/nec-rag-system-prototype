@@ -99,6 +99,35 @@ Services and specialties are stored as slug arrays (e.g., `["occupational-therap
 9. Synthesize via Anthropic API (Haiku 3.5)
 10. Return structured response with citations and disclaimers
 
+## Local Development
+
+**Infrastructure:** Postgres + pgvector and Ollama run permanently on the Hetzner VPS. Local dev connects via SSH tunnel. The tunnel makes VPS ports appear local (`localhost:5432`, `localhost:11434`).
+
+**First-time setup:**
+```bash
+make setup-api   # create venv, install dependencies
+make tunnel      # open SSH tunnel
+make setup-db              # create + migrate nec_rag_dev (default)
+make setup-db db=nec_rag   # create + migrate nec_rag (production)
+```
+
+**Daily workflow:**
+```bash
+make start-dev   # tunnel + FastAPI on :8000
+make stop-dev    # shut everything down
+make verify      # end-to-end Ollama → pgvector check (requires tunnel)
+make test        # integration tests — creates/drops nec_rag_test automatically (requires tunnel)
+```
+
+**Three databases on one VPS Postgres instance:**
+- `nec_rag` — production (deployed container)
+- `nec_rag_dev` — local development (`POSTGRES_DB` in `.env`)
+- `nec_rag_test` — test suite only; pytest creates and drops it each run
+
+**Schema changes:** Add a numbered file to `api/db/migrations/` (e.g., `0002_*.sql`). Never edit `0001_initial.sql`. Both `setup-db` and `apply-migrations` accept an optional `db=<name>` argument (default: `nec_rag_dev`). Run against each database explicitly — there is no "apply to all" shortcut.
+
+**pgvector query gotcha:** psycopg2 sends Python lists as `numeric[]`, not `vector`. Always cast embedding parameters explicitly: `%s::vector`. This applies to all `<=>` similarity queries.
+
 ## Reference Documents
 
 - `docs/SPEC.md` — full prototype specification (architecture, data model, query flow, ingestion, guardrails, eval, infrastructure, implementation order)

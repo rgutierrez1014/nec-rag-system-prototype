@@ -112,18 +112,20 @@ setup-api:
 	cd api && python3 -m venv .venv
 	cd api && .venv/bin/pip install -r requirements-dev.txt
 
+db ?= nec_rag_dev
+
 setup-db:
-	@echo "Requires SSH tunnel (make tunnel). Creating databases and applying migrations..."
-	cd api && .venv/bin/python -m scripts.setup_db
+	@echo "Requires SSH tunnel (make tunnel). Creating database and applying migrations to $(db)..."
+	cd api && .venv/bin/python -m scripts.setup_db $(db)
 
 apply-migrations:
-	@echo "Applying pending migrations to $(POSTGRES_DB)..."
+	@echo "Applying pending migrations to $(db)..."
 	cd api && .venv/bin/python -c "\
 		import os; from yoyo import get_backend, read_migrations; \
-		url = 'postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):$(POSTGRES_PORT)/$(POSTGRES_DB)'; \
+		url = 'postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):$(POSTGRES_PORT)/$(db)'; \
 		backend = get_backend(url); migrations = read_migrations('db/migrations'); \
 		backend.lock(); backend.apply_migrations(backend.to_apply(migrations)); \
-		print('Migrations applied to $(POSTGRES_DB)')"
+		print('Migrations applied to $(db)')"
 
 verify:
 	cd api && .venv/bin/python -m scripts.verify_setup
