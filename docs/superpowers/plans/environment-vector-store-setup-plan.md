@@ -458,11 +458,11 @@ Add to the existing `.gitignore`:
 
 ### Verification
 
-- [ ] `docker compose up -d` on VPS starts Postgres
-- [ ] `make setup-db` creates both databases and applies migrations
-- [ ] `make verify` completes with "All checks passed"
-- [ ] `make test` passes all tests (creates/drops `nec_rag_test` automatically)
-- [ ] `http://localhost:9999` opens Dozzle and shows container logs
+- [x] `docker compose up -d` on VPS starts Postgres
+- [x] `make setup-db` creates both databases and applies migrations
+- [x] `make verify` completes with "All checks passed"
+- [x] `make test` passes all tests (creates/drops `nec_rag_test` automatically)
+- [x] `http://localhost:9999` opens Dozzle and shows container logs
 
 ---
 
