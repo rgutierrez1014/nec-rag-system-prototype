@@ -60,7 +60,7 @@ def test_insert_and_query_vector(db_conn):
 
     cur.execute(
         """
-        SELECT id, name, 1 - (embedding <=> %s) AS similarity
+        SELECT id, name, 1 - (embedding <=> %s::vector) AS similarity
         FROM practices
         WHERE id = %s
         """,

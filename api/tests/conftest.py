@@ -51,6 +51,10 @@ def test_database():
     )
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     cur = conn.cursor()
+    cur.execute(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid()",
+        (TEST_DB,),
+    )
     cur.execute(f"DROP DATABASE IF EXISTS {TEST_DB}")
     cur.close()
     conn.close()

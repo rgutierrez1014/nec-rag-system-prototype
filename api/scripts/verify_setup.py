@@ -85,9 +85,9 @@ def main():
     query_embedding = generate_embedding(query_text, prefix="search_query")
     cur.execute(
         """
-        SELECT id, name, 1 - (embedding <=> %s) AS similarity
+        SELECT id, name, 1 - (embedding <=> %s::vector) AS similarity
         FROM practices
-        ORDER BY embedding <=> %s
+        ORDER BY embedding <=> %s::vector
         LIMIT 5
         """,
         (query_embedding, query_embedding),
