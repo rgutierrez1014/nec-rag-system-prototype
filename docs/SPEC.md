@@ -106,6 +106,7 @@ A Practice document in the vector store contains:
 - Presence types (in-person, remote)
 - Professional roster (names, titles, credentials)
 - NPI number
+- Neighborhood (SF neighborhood name, derived via reverse geocoding at ingestion time — see [Neighborhood enrichment](#neighborhood-enrichment))
 
 ### Object type registry
 
@@ -260,9 +261,21 @@ tasks/
 1. Download the NPI full replacement file (CSV, updated monthly by CMS).
 2. Filter rows by taxonomy code prefix and San Francisco County.
 3. Transform each matching row into a Practice-shaped document using the field mappings (see [Data model](#data-model)). Write records to a local JSON file for inspection before embedding.
-4. Generate embeddings by concatenating relevant text fields (practice name, service descriptions, city, state, professional names and credentials) into a single string per record.
+4. Generate embeddings by concatenating relevant text fields (practice name, service descriptions, neighborhood, city, state, professional names and credentials) into a single string per record, with the neighborhood embedded in natural language (see [Neighborhood enrichment](#neighborhood-enrichment)).
 5. Upsert into the practices table in the vector store with structured metadata columns (city, state, ZIP, taxonomy code, services) stored separately for filtering.
 6. The ingestion script is idempotent — re-running on already-ingested data produces no duplicate records (upsert on NPI number as the primary key).
+
+### Neighborhood enrichment
+
+San Francisco users are likely to search for practices using neighborhood names — the Sunset, SoMa, Inner Richmond, Hayes Valley — rather than street addresses. NPI records only include street addresses, so neither BM25 nor vector search would reliably match a query like "occupational therapist in the Sunset" to a practice at 1234 Irving St.
+
+This is handled at ingestion time, not query time. During NPI ingestion, each practice's street address is reverse geocoded to determine its SF neighborhood. The neighborhood name is then included directly in the text that gets embedded. For example, instead of embedding "1234 Irving St, San Francisco, CA 94122", the embedded text reads "located in the Sunset district of San Francisco (1234 Irving St, 94122)". This makes neighborhood names a natural part of the corpus, so both BM25 keyword matching and vector similarity search handle neighborhood queries without any special routing or conditional logic at query time.
+
+**Geocoding source:** San Francisco's official neighborhood boundary dataset (from DataSF), which maps coordinates to named neighborhood districts. The boundary polygons are loaded once at ingestion time and used for point-in-polygon lookups — no external API calls per record.
+
+**Neighborhood is also stored as a metadata column** on the practices table, enabling direct SQL filtering for neighborhood-scoped queries (e.g., a query mentioning "Sunset" can filter `WHERE neighborhood = 'Sunset'` in addition to semantic matching). This parallels the existing metadata filtering for ZIP codes and service types.
+
+**County expansion note:** This enrichment is SF-specific. When expanding to other counties, the same pattern applies if the county has an official neighborhood/district boundary dataset. Counties without such data skip this step — the system still works, just without neighborhood-level matching.
 
 ### Resource ingestion
 
@@ -310,7 +323,7 @@ The prototype uses `cross-encoder/ms-marco-MiniLM-L-6-v2` from the `sentence-tra
 
 ### Metadata filtering
 
-For Practice queries, structured constraints are extracted from the query using pattern matching and keyword detection (e.g., ZIP code regex, service/specialty term lookup against the known taxonomy). These constraints are applied as SQL WHERE clauses alongside the vector similarity search. For example, a query mentioning "occupational therapist" filters by the relevant service/taxonomy code, and a query mentioning "94110" filters by ZIP code. This narrows the candidate set to relevant records before semantic ranking.
+For Practice queries, structured constraints are extracted from the query using pattern matching and keyword detection (e.g., ZIP code regex, neighborhood name lookup, service/specialty term lookup against the known taxonomy). These constraints are applied as SQL WHERE clauses alongside the vector similarity search. For example, a query mentioning "occupational therapist" filters by the relevant service/taxonomy code, a query mentioning "94110" filters by ZIP code, and a query mentioning "the Sunset" filters by neighborhood. This narrows the candidate set to relevant records before semantic ranking.
 
 In production Phase 3 (Professionals and Spaces), this extraction may benefit from an LLM-based self-querying approach where the model parses complex multi-constraint queries. For the prototype's scope (single county, straightforward query patterns), pattern matching is sufficient and avoids an additional LLM call per query.
 
