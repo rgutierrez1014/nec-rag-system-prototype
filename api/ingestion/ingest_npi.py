@@ -111,6 +111,11 @@ def write_jsonl(practices: list[dict], output_path: str) -> None:
             f.write(json.dumps(practice) + "\n")
 
 
+def load_jsonl(jsonl_path: str) -> list[dict]:
+    with open(jsonl_path, encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
 def compose_description(practice: dict) -> str:
     name = practice["name"]
     services_text = " and ".join(slug.replace("-", " ") for slug in practice["services"])
@@ -128,9 +133,19 @@ def compose_description(practice: dict) -> str:
     )
 
 
+JSONL_PATH = "../data/npi_practices.jsonl"
+GEOCODE_CACHE_PATH = "../data/npi_geocoded.json"
+NEIGHBORHOODS_PATH = "../data/sf_neighborhoods.geojson"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ingest NPI data into practices table")
     parser.add_argument("--data-path", default="../data/npi_full.csv", help="Path to NPI CSV file")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Re-filter the NPI CSV from scratch, ignoring any cached JSONL",
+    )
     parser.add_argument(
         "--filter-only",
         action="store_true",
@@ -138,27 +153,29 @@ def main():
     )
     args = parser.parse_args()
 
-    print("Parsing rows...")
-    practices = filter_and_transform(args.data_path)
+    if not args.full and os.path.exists(JSONL_PATH):
+        print(f"Loading pre-filtered practices from {JSONL_PATH}...")
+        practices = load_jsonl(JSONL_PATH)
+        print(f"Loaded {len(practices)} practices.")
+    else:
+        print("Filtering NPI CSV...")
+        practices = filter_and_transform(args.data_path)
+        write_jsonl(practices, JSONL_PATH)
+        print(f"Filtered {len(practices)} practices, saved to {JSONL_PATH}.")
 
     if args.filter_only:
-        write_jsonl(practices, "../data/npi_practices.jsonl")
-        print(f"Wrote {len(practices)} practices to data/npi_practices.jsonl")
         return
 
-    # geocode to prep for neighborhood enrichmeent
     print("Geocoding practices...")
-    geocode_results = geocode_practices(practices, "../data/npi_geocoded.json")
-    # neighborhood enrichment
+    geocode_results = geocode_practices(practices, GEOCODE_CACHE_PATH)
     print("Loading SF neighborhoods...")
-    neighborhoods = load_neighborhoods("../data/sf_neighborhoods.geojson")
+    neighborhoods = load_neighborhoods(NEIGHBORHOODS_PATH)
     enrich_with_neighborhoods(practices, geocode_results, neighborhoods)
-    # compose descriptions (requires neighborhood)
     for practice in practices:
         practice["description"] = compose_description(practice)
 
-    write_jsonl(practices, "../data/npi_practices.jsonl")
-    print(f"Wrote {len(practices)} practices to data/npi_practices.jsonl")
+    write_jsonl(practices, JSONL_PATH)
+    print(f"Wrote enriched practices to {JSONL_PATH}.")
 
     print("Embedding and upsert not yet implemented (Step 4).")
 
