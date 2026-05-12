@@ -191,6 +191,10 @@ docs/internal
 data/raw/
 *.csv
 
+# NPI ingestion intermediate files (regenerable)
+data/npi_geocoded.json
+data/npi_practices.jsonl
+
 # Extracted resource content (local cache, regenerable)
 data/extracted/
 

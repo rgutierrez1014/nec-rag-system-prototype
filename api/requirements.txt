@@ -6,6 +6,9 @@ pgvector==0.3.*
 httpx==0.28.*
 yoyo-migrations==8.*
 
+# Ingestion (Step 2)
+shapely==2.*
+
 # Embeddings and ML (Step 5 will add sentence-transformers, rank-bm25)
 # Listed here as comments for visibility; install when needed
 
