@@ -385,6 +385,18 @@ def compose_description(practice: dict) -> str:
 3. Spot-check 5 descriptions: verify they include neighborhood names and correct address info.
 4. Check for empty neighborhoods: count practices where `neighborhood == ""` — should be <20% of total.
 
+### Deviations
+
+**Refactor — geocoding and neighborhoods extracted to separate modules:** `geocode_practices` and helpers moved to `api/ingestion/geocoding.py`; `load_neighborhoods`, `lookup_neighborhood`, and `enrich_with_neighborhoods` moved to `api/ingestion/neighborhoods.py`. `compose_description` stayed in `ingest_npi.py`. A shared `api/http_utils.py` module was added with `http_post_with_retry` and `http_get_with_retry`; both `geocoding.py` and `embeddings.py` use it instead of bare `httpx` calls.
+
+**Response format — coordinates are a single field:** The plan stated coordinates are at indices 5 and 6 as separate values. The actual Census Geocoder response puts them as a single `"lon,lat"` string in column 5, with column 6 being the TIGER/Line ID. Parser updated to split `row[5]` on comma.
+
+**Batch size — chunking required:** The plan assumed <2,000 records and a single batch call. The actual filtered set is ~12,775 records, exceeding the Census Geocoder's 10,000-record limit. `geocode_practices` now chunks at 9,000 records per request.
+
+**No-match caching:** The plan only cached matched coordinates. No-match responses were not cached, causing the 395 ungeocoded records to be re-submitted to the geocoder on every run. Updated `_call_census_batch_geocoder` to return `None` for no-match rows, and the cache now stores `null` for these entries so they are never re-submitted. `geocode_practices` returns only matched entries (non-null values) to callers.
+
+**JSONL caching and `--full` flag:** The plan had no provision for skipping the slow CSV filtering step on retry. A load-from-JSONL fast path was added: if `data/npi_practices.jsonl` exists and `--full` is not passed, the script loads from it instead of re-filtering the CSV. `--full` forces a fresh filter. The JSONL is written immediately after filtering (before geocoding) so that a geocoding failure on first run doesn't require re-filtering on retry; it is overwritten again after enrichment with neighborhoods and descriptions populated.
+
 ---
 
 ## Step 4: Embedding generation and database upsert
@@ -621,6 +633,6 @@ verify-npi:
 
 - [x] Step 1: Prerequisites — shapely dependency, data directory, neighborhood migration, shared embedding utility
 - [x] Step 2: NPI file filtering and Practice transform
-- [ ] Step 3: Neighborhood enrichment (geocoding + point-in-polygon)
+- [x] Step 3: Neighborhood enrichment (geocoding + point-in-polygon)
 - [ ] Step 4: Embedding generation and database upsert (includes CLI + Makefile)
 - [ ] Step 5: Verification targets
