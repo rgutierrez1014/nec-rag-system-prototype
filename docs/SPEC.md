@@ -124,7 +124,25 @@ Both datasets are scoped to San Francisco County for the prototype. This provide
 
 The National Provider Identifier registry, maintained by CMS and available as a full public download at nppes.cms.hhs.gov, provides structured provider records for every licensed healthcare provider in the United States.
 
-For the prototype, the dataset is filtered to **San Francisco County** behavioral health providers using taxonomy codes covering: psychologists, licensed counselors, marriage and family therapists, psychiatrists, occupational therapists, speech-language pathologists, and psychiatric nurse practitioners.
+For the prototype, the dataset is filtered to **San Francisco County** behavioral health providers using NPI taxonomy codes. The taxonomy-to-service mapping is defined in `api/ingestion/ingest_npi.py` and controls which provider types are ingested.
+
+#### Taxonomy code selection
+
+| Taxonomy prefix | Provider type | Service slug | Rationale |
+|----------------|--------------|-------------|-----------|
+| `103T` | Psychologist | `psychology` | Core behavioral health discipline |
+| `101Y` | Mental Health Counselor | `mental-health-counseling` | Licensed counselors (LPC, LPCC) — high-volume provider type |
+| `106H` | Marriage & Family Therapist | `marriage-family-therapy` | MFTs — common in SF, relevant for family-centered care |
+| `2084P` | Psychiatrist | `psychiatry` | Prescribers; needed for medication management queries |
+| `225X` | Occupational Therapist | `occupational-therapy` | Sensory integration, ADL support — core neurodivergent service |
+| `235Z` | Speech-Language Pathologist | `speech-language-pathology` | AAC, communication support — common neurodivergent need |
+| `364S` | Psychiatric/Mental Health Nurse Practitioner | `psychiatric-nursing` | NPs with prescribing authority; extends psychiatry coverage |
+| `1041` | Social Worker (all subtypes, including LCSW) | `social-work` | LCSWs are a large share of the SF mental health workforce |
+| `2080P0006` | Developmental-Behavioral Pediatrician | `developmental-behavioral-pediatrics` | Specialists in neurodevelopmental evaluation for children |
+| `2251` | Physical Therapist | `physical-therapy` | Motor support; co-occurs with OT for sensory/motor needs |
+| `231H` | Audiologist | `audiology` | Relevant for some neurodivergent individuals (auditory processing) |
+
+**ABA (Applied Behavior Analysis) is intentionally excluded.** ABA-affiliated providers and sources are blocked across the NEC platform per domain policy. The correct handling of ABA in search — whether to surface it with a disclaimer, suppress it entirely, or surface only non-aversive variants — requires input from an SME. See the note in [Guardrails](#guardrails).
 
 Each NPI record is transformed into a Practice-shaped document. The NPI fields that map to the Practice model are:
 
@@ -347,6 +365,18 @@ The system never states that a specific provider accepts a specific insurance pl
 
 1. **System prompt instruction:** The model is explicitly told to never claim a provider accepts or does not accept any specific insurance plan. If the query mentions insurance, the model must include the disclaimer.
 2. **Query-level detection:** Before synthesis, the query is checked for insurance-related terms (insurance, coverage, accepts, in-network, out-of-network, copay, deductible, HMO, PPO, Medi-Cal, Medicare). If detected, the response is flagged to include a prominent disclaimer — not as a footnote, but as a primary part of the answer: "Insurance coverage changes frequently and cannot be verified through this search. Please contact the provider directly to confirm they accept your plan."
+
+### ABA exclusion
+
+Applied Behavior Analysis (ABA) providers and sources are excluded from the system. This is consistent with the NEC platform's source exclusion policy and reflects significant controversy within the autistic and neurodivergent community around ABA's history and some current practices.
+
+**Current implementation:** ABA taxonomy codes are not included in `TAXONOMY_TO_SERVICE` in `api/ingestion/ingest_npi.py`. ABA-affiliated resource URLs are excluded from the curated resource corpus.
+
+**Open question — requires SME input:** The current blanket exclusion may be the correct policy, but it may also cause harm in the opposite direction — users who are seeking ABA services (particularly families who have already chosen ABA) will get no results and no explanation. The right answer likely depends on nuance that the engineering team should not decide alone. Before this system is used by real users, consult with an SME from a disability advocacy organization (e.g., someone from The Arc, ASAN, or a self-advocate on the NEC advisory board) to determine the correct policy. Options include:
+- Continue full exclusion with no explanation
+- Continue full exclusion but surface a message explaining why and directing users to contact NEC directly
+- Surface ABA providers with a prominent advisory note about the controversy and links to community perspectives
+- Surface only ABA providers who have adopted naturalistic/non-aversive approaches (requires additional classification data not available from NPI)
 
 ### AI transparency
 
