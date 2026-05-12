@@ -2,6 +2,7 @@ import argparse
 import csv
 import json
 import os
+import re
 
 
 TAXONOMY_TO_SERVICE = {
@@ -20,6 +21,13 @@ TAXONOMY_TO_SERVICE = {
 }
 
 TAXONOMY_PREFIXES = tuple(TAXONOMY_TO_SERVICE.keys())
+
+# Fixes title-case mangling of ordinal suffixes (24Th St → 24th St)
+_ORDINAL_RE = re.compile(r'(\d+)(St|Nd|Rd|Th)\b')
+
+
+def _title_address(address: str) -> str:
+    return _ORDINAL_RE.sub(lambda m: m.group(1) + m.group(2).lower(), address.title())
 
 
 def _row_taxonomy_codes(row: dict) -> list[str]:
@@ -49,7 +57,7 @@ def transform_npi_row(row: dict) -> dict:
         last = row["Provider Last Name (Legal Name)"].strip().title()
         credential = row.get("Provider Credential Text", "").strip()
         name = f"{first} {last}, {credential}" if credential else f"{first} {last}"
-        professionals = [{"name": f"{first} {last}", "credential": credential}]
+        professionals = [{"name": f"{first} {last}", "credentials": credential, "npi_number": row["NPI"].strip()}]
 
     zip_code = row["Provider Business Practice Location Address Postal Code"].strip()[:5]
 
@@ -58,7 +66,7 @@ def transform_npi_row(row: dict) -> dict:
         "name": name,
         "description": "",
         "practice_type": "healthcare",
-        "address_1": row["Provider Business Practice Location Address First Line"].strip().title(),
+        "address_1": _title_address(row["Provider First Line Business Practice Location Address"].strip()),
         "address_city": "San Francisco",
         "address_state": "CA",
         "address_zip": zip_code,
@@ -72,9 +80,13 @@ def transform_npi_row(row: dict) -> dict:
 
 def filter_and_transform(csv_path: str) -> list[dict]:
     practices = []
+    i = 1
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            if i % 10000 == 0:
+                print(f"  Parsed {i} rows.")
+            i += 1
             if row.get("NPI Deactivation Date", "").strip():
                 continue
             city = row.get("Provider Business Practice Location Address City Name", "").strip().upper()
@@ -85,6 +97,7 @@ def filter_and_transform(csv_path: str) -> list[dict]:
             if not _row_matches_taxonomy(codes):
                 continue
             practices.append(transform_npi_row(row))
+    print(f"Parsed {i} rows total.")
     return practices
 
 
@@ -105,6 +118,7 @@ def main():
     )
     args = parser.parse_args()
 
+    print("Parsing rows...")
     practices = filter_and_transform(args.data_path)
 
     if args.filter_only:

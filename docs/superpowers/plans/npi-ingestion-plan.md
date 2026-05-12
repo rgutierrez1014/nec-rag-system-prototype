@@ -188,7 +188,7 @@ TAXONOMY_PREFIXES = tuple(TAXONOMY_TO_SERVICE.keys())
 | `Provider Last Name (Legal Name)` | Individual last name (Type 1) |
 | `Provider First Name` | Individual first name (Type 1) |
 | `Provider Credential Text` | Credential abbreviation (Type 1) |
-| `Provider Business Practice Location Address First Line` | Street address |
+| `Provider First Line Business Practice Location Address` | Street address |
 | `Provider Business Practice Location Address City Name` | City (filter: SAN FRANCISCO) |
 | `Provider Business Practice Location Address State Name` | State code (filter: CA) |
 | `Provider Business Practice Location Address Postal Code` | ZIP+4 (trim to 5) |
@@ -258,6 +258,20 @@ def transform_npi_row(row: dict) -> dict:
 3. Spot-check a few records: `head -5 data/npi_practices.jsonl | python -m json.tool`
 4. Verify services arrays contain slugs from `TAXONOMY_TO_SERVICE`, not raw taxonomy codes.
 5. Verify names are properly formatted (Title Case for individuals, org names).
+
+### Deviations
+
+**Column name (V2 NPPES file):** The street address column was renamed in the V2 file format. The plan specified `Provider Business Practice Location Address First Line`; the actual column is `Provider First Line Business Practice Location Address`. Updated in both `ingest_npi.py` and the plan's column reference table.
+
+**Ordinal suffix fix:** `.title()` mangles ordinal suffixes in street numbers (24TH → 24Th). Added `_title_address()` helper using a regex to fix this (24Th → 24th).
+
+**`credentials` field name:** The professionals dict uses `credentials` (plural) to match the NEC platform's field name, not `credential` as written in the plan.
+
+**`npi_number` in professionals:** Added `npi_number` to the professionals dict for Type 1 records. For Type 1 NPI records, the NPI number belongs to the individual provider, so it's meaningful to carry it in the professionals entry for future deduplication when SRIP data links individuals to org practices.
+
+**Expanded taxonomy types:** Four taxonomy types were added beyond the original plan (social work `1041`, developmental-behavioral pediatrics `2080P0006`, physical therapy `2251`, audiology `231H`). This raised the SF County record count from the estimated ~500–2,000 to ~12,775.
+
+**Progress logging:** `filter_and_transform()` prints progress every 10,000 rows and a final total. Added during implementation to provide feedback while streaming the ~9GB CSV.
 
 ---
 
@@ -606,7 +620,7 @@ verify-npi:
 ## Completion checklist
 
 - [x] Step 1: Prerequisites — shapely dependency, data directory, neighborhood migration, shared embedding utility
-- [ ] Step 2: NPI file filtering and Practice transform
+- [x] Step 2: NPI file filtering and Practice transform
 - [ ] Step 3: Neighborhood enrichment (geocoding + point-in-polygon)
 - [ ] Step 4: Embedding generation and database upsert (includes CLI + Makefile)
 - [ ] Step 5: Verification targets

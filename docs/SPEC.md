@@ -156,6 +156,8 @@ Each NPI record is transformed into a Practice-shaped document. The NPI fields t
 
 Fields the NPI registry does not include — insurance accepted, languages, neurodivergent-affirming credentials — are left empty and noted as fields that SRIP partner data will eventually populate.
 
+**Future work: NPI taxonomy → Service hierarchy mapping.** The NEC platform's `Service` model uses an MPTT hierarchy (e.g., "Medical > Primary Care > Internal Medicine"). NPI taxonomy codes have their own three-level grouping/classification/specialization structure, but the groupings are credentialing categories ("Allopathic & Osteopathic Physicians"), not user-facing navigation concepts, and there is no equivalent of a "Primary Care" middle layer. The right approach is to design the service hierarchy from user intent first, then map NPI taxonomy codes to nodes in that hierarchy — not to derive the hierarchy from NPI structure. This mapping work is a one-time investment that unlocks accurate service filtering for all NPI-sourced providers. It needs to happen before the prototype moves to a second county or before the service filter UI is built.
+
 ### Curated resource corpus (informational content)
 
 A hand-curated list of 50-100 high-quality informational pages from community-trusted organizations: ASAN (autisticadvocacy.org), The Arc (thearc.org), CHADD (chadd.org), Understood (understood.org), and similar. The corpus includes two types of content:
