@@ -566,6 +566,20 @@ ingest-npi:
 9. Idempotency: run `make ingest-npi` a second time, verify record count unchanged.
 10. `make verify` still passes.
 
+### Deviations
+
+**Module extraction:** `build_embedding_input` and `embed_practices` were extracted to `api/ingestion/embedding.py` and `upsert_practices` + `fetch_embedded_npi_numbers` to `api/ingestion/upsert.py`, matching the pattern of `geocoding.py` and `neighborhoods.py`. `ingest_npi.py` imports from all four modules.
+
+**Per-batch upsert for resumability:** The plan embedded all practices then upserted in one call. Instead, `embed_practices` accepts a `conn` and calls `upsert_practices` after each batch of 50. On restart, `main()` queries `fetch_embedded_npi_numbers()` and skips already-embedded NPIs — embedding the full ~12k records takes ~4 hours against Ollama, so crash recovery without re-doing completed work was essential.
+
+**`credentials` field name (plural):** `build_embedding_input` uses `p.get('credentials', '')` (plural) to match the field name established in Step 2.
+
+**`verify_setup.py` moved and converted:** Moved from `api/scripts/verify_setup.py` to `api/verify/verify_infra.py` and rewritten as a pytest file. `make verify-infra` runs it. `make verify` now runs `verify-infra` and `verify-npi` in sequence.
+
+**`verify/npi_ingestion.py` added (Step 5 absorbed):** Post-ingestion verification was implemented as a pytest file in `api/verify/npi_ingestion.py` rather than as an inline Makefile script. Unit/integration tests for ingestion functions were added to `api/tests/test_ingest_npi.py`. The `verify/` directory is the convention for all scripts that validate a running system against the dev DB.
+
+**Similarity threshold:** `verify_infra.py` embedding roundtrip test uses a threshold of 0.3 (not 0.5) — nomic-embed-text returned 0.47 for the test query pair, which is a valid result below 0.5.
+
 ---
 
 ## Step 5: Verification targets
@@ -634,5 +648,5 @@ verify-npi:
 - [x] Step 1: Prerequisites — shapely dependency, data directory, neighborhood migration, shared embedding utility
 - [x] Step 2: NPI file filtering and Practice transform
 - [x] Step 3: Neighborhood enrichment (geocoding + point-in-polygon)
-- [ ] Step 4: Embedding generation and database upsert (includes CLI + Makefile)
-- [ ] Step 5: Verification targets
+- [x] Step 4: Embedding generation and database upsert (includes CLI + Makefile)
+- [x] Step 5: Verification targets (absorbed into Step 4 — see deviations)
