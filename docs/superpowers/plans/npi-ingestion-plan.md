@@ -15,7 +15,7 @@ The ingestion is invoked as a CLI script (`make ingest-npi`), not an HTTP endpoi
 - **Practice-centric data model** — each NPI record maps to one Practice document.
 - **No ORM** — `psycopg2` with `execute_values()` for bulk upserts.
 - **Idempotent** — upsert on `npi_number` as conflict key.
-- **nomic-embed-text requires prefixes** — `search_document:` for document embeddings, `search_query:` for query embeddings. The existing `verify_setup.py` already implements this correctly.
+- **nomic-embed-text requires prefixes** — `search_document:` for document embeddings, `search_query:` for query embeddings. The existing `verify/verify_infra.py` already implements this correctly.
 - **Specialties left empty** — NPI taxonomy codes map to services only. Specialties (`[]`) will be populated later from SRIP partner data, which carries sub-service granularity (techniques, equipment, modalities).
 
 ---
@@ -68,14 +68,9 @@ The GeoJSON file is small (~500KB) and committed. CSV files are already gitignor
 
 ### 1c. Download SF neighborhood boundaries
 
-Download the SF Analysis Neighborhoods GeoJSON from DataSF and commit to repo:
+Download the SF neighborhoods GeoJSON from [codeforamerica/click_that_hood](https://github.com/codeforamerica/click_that_hood) and commit to repo. This source provides valid polygons for 37 SF neighborhoods with a `name` property per feature (e.g., "Sunset/Parkside", "Mission", "South of Market").
 
-```bash
-curl -o data/sf_neighborhoods.geojson \
-  "https://data.sfgov.org/resource/p5b7-5n3h.geojson?\$limit=50000"
-```
-
-The `nhood` property in each feature is the neighborhood display name (e.g., "Sunset/Parkside", "Mission", "South of Market").
+Note: The DataSF Analysis Neighborhoods SODA endpoint (`/resource/p5b7-5n3h.geojson`) is broken — it returns features with null geometries. Use the click_that_hood source instead.
 
 ### 1d. Create neighborhood migration
 
@@ -91,64 +86,63 @@ CREATE INDEX IF NOT EXISTS practices_neighborhood_idx ON practices (neighborhood
 
 Apply to dev database: `make apply-migrations` (or `make apply-migrations db=nec_rag_dev`).
 
-### 1e. Extract shared embedding utility
+### 1e. Extract shared HTTP and embedding utilities
 
-Move the embedding generation logic from `verify_setup.py` into a shared module so both `verify_setup.py` and `ingest_npi.py` can use it.
+**New file:** `api/http_utils.py`
+
+Extract retry logic into a shared module used by both `embeddings.py` and `ingestion/geocoding.py`:
+
+```python
+def http_post_with_retry(url, *, retries=3, backoff=2, **kwargs) -> httpx.Response:
+    ...
+
+def http_get_with_retry(url, *, retries=3, backoff=2, **kwargs) -> httpx.Response:
+    ...
+```
 
 **New file:** `api/embeddings.py`
 
 ```python
 import os
-
-import httpx
+from http_utils import http_get_with_retry, http_post_with_retry
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-embed-text")
 
 
 def generate_embedding(text: str, prefix: str = "search_document") -> list[float]:
-    response = httpx.post(
+    response = http_post_with_retry(
         f"{OLLAMA_BASE_URL}/api/embeddings",
-        json={"model": EMBEDDING_MODEL, "prompt": f"{prefix}: {text}"},
         timeout=30.0,
+        json={"model": EMBEDDING_MODEL, "prompt": f"{prefix}: {text}"},
     )
-    response.raise_for_status()
     return response.json()["embedding"]
 
 
 def get_embedding_model_version() -> str:
-    response = httpx.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=10.0)
-    response.raise_for_status()
+    response = http_get_with_retry(f"{OLLAMA_BASE_URL}/api/tags", timeout=10.0)
     for model in response.json().get("models", []):
         if model["name"].startswith(EMBEDDING_MODEL):
             return model.get("digest", EMBEDDING_MODEL)[:12]
     return EMBEDDING_MODEL
 ```
 
-Update `api/scripts/verify_setup.py` to import from the shared module:
+Update `api/verify/verify_infra.py` to import from the shared module:
 
 ```python
 from embeddings import generate_embedding, EMBEDDING_MODEL
 ```
 
-Remove the duplicated `generate_embedding()`, `OLLAMA_BASE_URL`, and `EMBEDDING_MODEL` from `verify_setup.py`.
+### 1f. Extract apply-migrations logic to a script
 
-### 1f. Extract apply-migrations logic to a script (added during implementation)
-
-The inline Python in the `apply-migrations` Makefile target was extracted to `api/scripts/apply_migrations.py`. The script applies pending migrations one at a time and prints per-migration status (Django-style output). The Makefile target is now a one-liner calling this script.
+Extract the inline Python in the `apply-migrations` Makefile target to `api/scripts/apply_migrations.py`. The script applies pending migrations one at a time within a single lock and prints per-migration status (Django-style output). The Makefile target becomes a one-liner calling this script.
 
 ### Verification
 
 1. `make setup-api` completes without error (shapely installs).
 2. `make apply-migrations` adds the neighborhood column and prints per-migration status.
-3. `data/sf_neighborhoods.geojson` exists and contains GeoJSON features with a neighborhood name property.
-4. `make verify` still passes (verify_setup.py uses the shared embedding module).
-
-### Deviations
-
-**1c — Data source:** The plan specified the DataSF Analysis Neighborhoods dataset (`p5b7-5n3h`) with a `nhood` property per feature. That endpoint is broken: the SODA GeoJSON endpoint (`/resource/p5b7-5n3h.geojson`) returns 41 features with `"geometry": null` and `"properties": {}` (dataset registered in the catalog but no row data); the geospatial export endpoint (`/api/geospatial/p5b7-5n3h?method=export&type=GeoJSON`) returns a truncated 53-byte file despite a 200 response. Used the [codeforamerica/click_that_hood](https://github.com/codeforamerica/click_that_hood) SF GeoJSON instead — valid polygons for 37 SF neighborhoods, but the property name is `name` (not `nhood`). **The `load_neighborhoods()` function in Step 3 must use `feature["properties"]["name"]` instead of `feature["properties"]["nhood"]`.**
-
-**1f — apply-migrations script:** The inline Python in the Makefile `apply-migrations` target was extracted to `api/scripts/apply_migrations.py` (not in the original plan). The script is self-contained (does not import from `setup_db.py`) and applies migrations one at a time within a single lock, printing Django-style per-migration status. The `api/scripts/apply_migrations.py` file should be added to the files summary.
+3. `data/sf_neighborhoods.geojson` exists and contains GeoJSON features with a `name` property.
+4. `make verify` still passes (verify_infra.py uses the shared embedding module).
 
 ---
 
@@ -160,9 +154,9 @@ Filter the NPI CSV to SF County behavioral health providers and transform each r
 
 **New file:** `api/ingestion/ingest_npi.py`
 
-This module contains all core ingestion logic as framework-agnostic functions. The CLI entry point is at the bottom (`if __name__ == "__main__"`).
+This module contains the filter, transform, compose-description, and CLI entry point. Geocoding, neighborhood enrichment, embedding, and upsert each live in their own submodule (see Steps 3 and 4).
 
-**Taxonomy mapping constant:**
+**Taxonomy mapping constant** — includes behavioral health and related allied health disciplines. ABA is intentionally excluded per SPEC.md guardrails:
 
 ```python
 TAXONOMY_TO_SERVICE = {
@@ -173,12 +167,16 @@ TAXONOMY_TO_SERVICE = {
     "225X": "occupational-therapy",
     "235Z": "speech-language-pathology",
     "364S": "psychiatric-nursing",
+    "1041": "social-work",
+    "2080P0006": "developmental-behavioral-pediatrics",
+    "2251": "physical-therapy",
+    "231H": "audiology",
 }
 
 TAXONOMY_PREFIXES = tuple(TAXONOMY_TO_SERVICE.keys())
 ```
 
-**CSV filtering — key NPI column names:**
+**CSV filtering — key NPI column names (V2 NPPES format):**
 
 | NPI CSV column | Used for |
 |----------------|----------|
@@ -203,23 +201,30 @@ TAXONOMY_PREFIXES = tuple(TAXONOMY_TO_SERVICE.keys())
 4. Check if any taxonomy code starts with a prefix in `TAXONOMY_PREFIXES`. Skip if none match.
 5. Transform matching row → Practice dict.
 
+Log progress every 10,000 rows — the NPI CSV is ~9GB and feedback during streaming is essential.
+
+**Address title-casing helper:** `.title()` mangles ordinal suffixes in street numbers (24TH → 24Th). Use a regex helper to fix this:
+
+```python
+_ORDINAL_RE = re.compile(r'(\d+)(St|Nd|Rd|Th)\b')
+
+def _title_address(address: str) -> str:
+    return _ORDINAL_RE.sub(lambda m: m.group(1) + m.group(2).lower(), address.title())
+```
+
 **Transform logic per row:**
 
 ```python
 def transform_npi_row(row: dict) -> dict:
-    entity_type = row["Entity Type Code"]
-    taxonomy_codes = [
-        row.get(f"Healthcare Provider Taxonomy Code_{i}", "")
-        for i in range(1, 16)
-    ]
-    taxonomy_codes = [c for c in taxonomy_codes if c]
-
+    taxonomy_codes = _row_taxonomy_codes(row)
     services = list({
-        slug for code in taxonomy_codes
+        slug
+        for code in taxonomy_codes
         for prefix, slug in TAXONOMY_TO_SERVICE.items()
         if code.startswith(prefix)
     })
 
+    entity_type = row["Entity Type Code"]
     if entity_type == "2":
         name = row["Provider Organization Name (Legal Business Name)"].strip().title()
         professionals = []
@@ -228,7 +233,9 @@ def transform_npi_row(row: dict) -> dict:
         last = row["Provider Last Name (Legal Name)"].strip().title()
         credential = row.get("Provider Credential Text", "").strip()
         name = f"{first} {last}, {credential}" if credential else f"{first} {last}"
-        professionals = [{"name": f"{first} {last}", "credential": credential}]
+        # npi_number carried in professionals for future deduplication when SRIP data
+        # links individuals to org practices
+        professionals = [{"name": f"{first} {last}", "credentials": credential, "npi_number": row["NPI"].strip()}]
 
     zip_code = row["Provider Business Practice Location Address Postal Code"].strip()[:5]
 
@@ -237,7 +244,7 @@ def transform_npi_row(row: dict) -> dict:
         "name": name,
         "description": "",  # composed after neighborhood enrichment
         "practice_type": "healthcare",
-        "address_1": row["Provider Business Practice Location Address First Line"].strip().title(),
+        "address_1": _title_address(row["Provider First Line Business Practice Location Address"].strip()),
         "address_city": "San Francisco",
         "address_state": "CA",
         "address_zip": zip_code,
@@ -249,37 +256,29 @@ def transform_npi_row(row: dict) -> dict:
     }
 ```
 
+Note: the professionals dict uses `credentials` (plural) to match the NEC platform's field name.
+
 **Write filtered practices to JSONL:** After filtering and transforming, write all practice dicts to `data/npi_practices.jsonl` (one JSON object per line) as the canonical inspection artifact. Descriptions are empty at this stage — they're composed after neighborhood enrichment.
+
+**JSONL fast-path:** If `data/npi_practices.jsonl` already exists, load from it instead of re-filtering the CSV. Pass `--full` to force a fresh filter. This is essential since the NPI CSV takes several minutes to stream.
 
 ### Verification
 
 1. Run the filter on the NPI CSV: `cd api && .venv/bin/python -m ingestion.ingest_npi --data-path ../data/npi_full.csv --filter-only`
-2. Check the JSONL output: `wc -l data/npi_practices.jsonl` — expect ~500-2,000 records.
+2. Check the JSONL output: `wc -l data/npi_practices.jsonl` — expect ~12,000+ records.
 3. Spot-check a few records: `head -5 data/npi_practices.jsonl | python -m json.tool`
 4. Verify services arrays contain slugs from `TAXONOMY_TO_SERVICE`, not raw taxonomy codes.
 5. Verify names are properly formatted (Title Case for individuals, org names).
-
-### Deviations
-
-**Column name (V2 NPPES file):** The street address column was renamed in the V2 file format. The plan specified `Provider Business Practice Location Address First Line`; the actual column is `Provider First Line Business Practice Location Address`. Updated in both `ingest_npi.py` and the plan's column reference table.
-
-**Ordinal suffix fix:** `.title()` mangles ordinal suffixes in street numbers (24TH → 24Th). Added `_title_address()` helper using a regex to fix this (24Th → 24th).
-
-**`credentials` field name:** The professionals dict uses `credentials` (plural) to match the NEC platform's field name, not `credential` as written in the plan.
-
-**`npi_number` in professionals:** Added `npi_number` to the professionals dict for Type 1 records. For Type 1 NPI records, the NPI number belongs to the individual provider, so it's meaningful to carry it in the professionals entry for future deduplication when SRIP data links individuals to org practices.
-
-**Expanded taxonomy types:** Four taxonomy types were added beyond the original plan (social work `1041`, developmental-behavioral pediatrics `2080P0006`, physical therapy `2251`, audiology `231H`). This raised the SF County record count from the estimated ~500–2,000 to ~12,775.
-
-**Progress logging:** `filter_and_transform()` prints progress every 10,000 rows and a final total. Added during implementation to provide feedback while streaming the ~9GB CSV.
 
 ---
 
 ## Step 3: Neighborhood enrichment (geocoding + point-in-polygon)
 
-Geocode filtered practice addresses and look up SF neighborhoods.
+Geocode filtered practice addresses and look up SF neighborhoods. Each concern lives in its own module: `api/ingestion/geocoding.py` and `api/ingestion/neighborhoods.py`.
 
 ### 3a. Census Geocoder batch call
+
+**New file:** `api/ingestion/geocoding.py`
 
 **Endpoint:** `https://geocoding.geo.census.gov/geocoder/geographies/addressbatch`
 
@@ -289,61 +288,48 @@ Geocode filtered practice addresses and look up SF neighborhoods.
 - `vintage`: `Current_Current`
 - `returntype`: `geographies`
 
-**Response format:** CSV with columns including the matched coordinates (longitude, latitude) in columns at indices 5 and 6 for matched records, and a match indicator at index 2 (`Match` or `No_Match`).
+**Response format:** CSV where matched records have a `"lon,lat"` string at index 5 (a single comma-separated field, not two separate columns). Index 2 is the match indicator (`Match` or `No_Match`).
 
 **Implementation notes:**
-- Batch all filtered practices in a single call (expected <2,000 records, well within the 10,000 limit).
+- Chunk requests at 9,000 records (the filtered SF set is ~12,775, exceeding the 10,000-record limit).
 - **Address normalization before geocoding:** Strip suite/unit numbers (regex: `r'\b(ste|suite|unit|apt|#)\s*\w+$'`, case-insensitive) — the Census geocoder handles these poorly.
-- **Retry logic:** Retry failed requests up to 3 times with exponential backoff (2s, 4s, 8s). The Census geocoder can be slow and occasionally returns 5xx errors.
-- **Cache results:** Write geocoding results to `data/npi_geocoded.json` keyed by `npi_number`. On re-run, load cache first and only geocode new/uncached NPIs.
+- **Retry logic:** Use `http_post_with_retry` from `api/http_utils.py` — the Census geocoder can be slow and occasionally returns 5xx errors.
+- **Cache results:** Write geocoding results to `data/npi_geocoded.json` keyed by `npi_number`. On re-run, load cache first and only geocode new/uncached NPIs. Cache `null` for no-match entries so they are never re-submitted.
 
 ```python
-import io
-import re
-import time
-
 def geocode_practices(practices: list[dict], cache_path: str) -> dict[str, tuple[float, float]]:
-    """Batch geocode practices via Census Geocoder. Returns {npi_number: (lat, lon)}."""
+    """Batch geocode practices via Census Geocoder. Returns {npi_number: (lat, lon)} for matched records."""
     cache = load_json_cache(cache_path)
 
     uncached = [p for p in practices if p["npi_number"] not in cache]
     if not uncached:
-        return cache
+        return {k: v for k, v in cache.items() if v is not None}
 
-    csv_lines = []
-    for p in uncached:
-        address = strip_suite_number(p["address_1"])
-        csv_lines.append(f'{p["npi_number"]},{address},{p["address_city"]},{p["address_state"]},{p["address_zip"]}')
+    for chunk in chunks(uncached, 9000):
+        results = _call_census_batch_geocoder(chunk)
+        cache.update(results)  # includes null entries for no-match
 
-    csv_content = "\n".join(csv_lines)
-    results = call_census_batch_geocoder(csv_content, retries=3)
-    cache.update(results)
     save_json_cache(cache_path, cache)
-    return cache
-
-
-def strip_suite_number(address: str) -> str:
-    return re.sub(r'\b(ste|suite|unit|apt|#)\s*\S+$', '', address, flags=re.IGNORECASE).strip()
+    return {k: v for k, v in cache.items() if v is not None}
 ```
 
 ### 3b. Point-in-polygon neighborhood lookup
 
-Use `shapely` to find the containing neighborhood for each geocoded point:
+**New file:** `api/ingestion/neighborhoods.py`
+
+Use `shapely` to find the containing neighborhood for each geocoded point. The GeoJSON uses `feature["properties"]["name"]` for the neighborhood display name:
 
 ```python
-import json
 from shapely.geometry import shape, Point
 
 def load_neighborhoods(geojson_path: str) -> list[tuple[str, any]]:
     """Load SF neighborhood polygons. Returns [(name, polygon), ...]."""
     with open(geojson_path) as f:
         data = json.load(f)
-    neighborhoods = []
-    for feature in data["features"]:
-        name = feature["properties"]["nhood"]
-        polygon = shape(feature["geometry"])
-        neighborhoods.append((name, polygon))
-    return neighborhoods
+    return [
+        (feature["properties"]["name"], shape(feature["geometry"]))
+        for feature in data["features"]
+    ]
 
 
 def lookup_neighborhood(lat: float, lon: float, neighborhoods: list) -> str:
@@ -356,14 +342,12 @@ def lookup_neighborhood(lat: float, lon: float, neighborhoods: list) -> str:
 
 ### 3c. Compose description
 
-After neighborhood enrichment, compose the `description` field:
+After neighborhood enrichment, compose the `description` field in `ingest_npi.py`:
 
 ```python
 def compose_description(practice: dict) -> str:
     name = practice["name"]
-    services_text = " and ".join(
-        slug.replace("-", " ") for slug in practice["services"]
-    )
+    services_text = " and ".join(slug.replace("-", " ") for slug in practice["services"])
     neighborhood = practice["neighborhood"]
 
     if neighborhood:
@@ -380,62 +364,73 @@ def compose_description(practice: dict) -> str:
 
 ### Verification
 
-1. Check geocoding cache: `python -c "import json; d=json.load(open('data/npi_geocoded.json')); print(f'{len(d)} geocoded')"` — expect matches for 80%+ of records.
+1. Check geocoding cache: `python -c "import json; d=json.load(open('data/npi_geocoded.json')); print(f'{sum(1 for v in d.values() if v)} matched, {sum(1 for v in d.values() if not v)} no-match')"` — expect matches for 80%+ of records.
 2. Check neighborhood distribution: count practices per neighborhood from the enriched data. Expect recognizable SF neighborhoods (Sunset/Parkside, Mission, SoMa, etc.).
 3. Spot-check 5 descriptions: verify they include neighborhood names and correct address info.
 4. Check for empty neighborhoods: count practices where `neighborhood == ""` — should be <20% of total.
-
-### Deviations
-
-**Refactor — geocoding and neighborhoods extracted to separate modules:** `geocode_practices` and helpers moved to `api/ingestion/geocoding.py`; `load_neighborhoods`, `lookup_neighborhood`, and `enrich_with_neighborhoods` moved to `api/ingestion/neighborhoods.py`. `compose_description` stayed in `ingest_npi.py`. A shared `api/http_utils.py` module was added with `http_post_with_retry` and `http_get_with_retry`; both `geocoding.py` and `embeddings.py` use it instead of bare `httpx` calls.
-
-**Response format — coordinates are a single field:** The plan stated coordinates are at indices 5 and 6 as separate values. The actual Census Geocoder response puts them as a single `"lon,lat"` string in column 5, with column 6 being the TIGER/Line ID. Parser updated to split `row[5]` on comma.
-
-**Batch size — chunking required:** The plan assumed <2,000 records and a single batch call. The actual filtered set is ~12,775 records, exceeding the Census Geocoder's 10,000-record limit. `geocode_practices` now chunks at 9,000 records per request.
-
-**No-match caching:** The plan only cached matched coordinates. No-match responses were not cached, causing the 395 ungeocoded records to be re-submitted to the geocoder on every run. Updated `_call_census_batch_geocoder` to return `None` for no-match rows, and the cache now stores `null` for these entries so they are never re-submitted. `geocode_practices` returns only matched entries (non-null values) to callers.
-
-**JSONL caching and `--full` flag:** The plan had no provision for skipping the slow CSV filtering step on retry. A load-from-JSONL fast path was added: if `data/npi_practices.jsonl` exists and `--full` is not passed, the script loads from it instead of re-filtering the CSV. `--full` forces a fresh filter. The JSONL is written immediately after filtering (before geocoding) so that a geocoding failure on first run doesn't require re-filtering on retry; it is overwritten again after enrichment with neighborhoods and descriptions populated.
 
 ---
 
 ## Step 4: Embedding generation and database upsert
 
-Generate embeddings for all enriched practices and upsert into the `practices` table.
+Generate embeddings for all enriched practices and upsert into the `practices` table. Each concern lives in its own module to match the pattern established in Step 3.
 
-### 4a. Embedding generation
+### 4a. Embedding generation module
 
-Use the shared `generate_embedding()` from `api/embeddings.py` (extracted in Step 1e).
-
-**Embedding input string construction:**
+**New file:** `api/ingestion/embedding.py`
 
 ```python
+from embeddings import generate_embedding, get_embedding_model_version
+from ingestion.upsert import upsert_practices
+
+
 def build_embedding_input(practice: dict) -> str:
     parts = [practice["description"]]
     if practice["services"]:
         parts.append(f"Services: {', '.join(practice['services'])}")
     if practice["professionals"]:
         roster = ", ".join(
-            f"{p['name']} {p.get('credential', '')}".strip()
+            f"{p['name']} {p.get('credentials', '')}".strip()
             for p in practice["professionals"]
         )
         parts.append(f"Professionals: {roster}")
     return ". ".join(parts)
+
+
+def embed_practices(practices: list[dict], conn) -> None:
+    model_version = get_embedding_model_version()
+    total = len(practices)
+    for i in range(0, total, 50):
+        batch = practices[i:i + 50]
+        for practice in batch:
+            practice["embedding"] = generate_embedding(build_embedding_input(practice))
+            practice["embedding_model"] = model_version
+        upsert_practices(conn, batch)
+        done = min(i + 50, total)
+        if done % 100 == 0 or done == total:
+            print(f"  Embedded and upserted {done}/{total} practices.")
 ```
 
-The `generate_embedding()` function handles the `search_document:` prefix automatically.
+Each batch of 50 is upserted immediately after embedding. This makes the pipeline resumable — if interrupted, a restart skips already-embedded NPIs and picks up where it left off (see 4b).
 
-**Batching:** Process embeddings in batches of 50 records. Log progress every 100 records. Obtain the embedding model version string once at the start via `get_embedding_model_version()`.
+### 4b. Database upsert module
 
-### 4b. Database upsert
-
-Register the pgvector adapter and upsert with `execute_values()`:
+**New file:** `api/ingestion/upsert.py`
 
 ```python
-from psycopg2.extras import execute_values, Json
+from psycopg2.extras import Json, execute_values
 from pgvector.psycopg2 import register_vector
 
-def upsert_practices(conn, practices: list[dict]):
+
+def fetch_embedded_npi_numbers(conn) -> set[str]:
+    cur = conn.cursor()
+    cur.execute("SELECT npi_number FROM practices WHERE embedding IS NOT NULL")
+    result = {row[0] for row in cur.fetchall()}
+    cur.close()
+    return result
+
+
+def upsert_practices(conn, practices: list[dict]) -> None:
     register_vector(conn)
     cur = conn.cursor()
 
@@ -479,6 +474,7 @@ def upsert_practices(conn, practices: list[dict]):
             updated_at = NOW()
         """,
         values,
+        template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
         page_size=100,
     )
 
@@ -486,130 +482,135 @@ def upsert_practices(conn, practices: list[dict]):
     cur.close()
 ```
 
-**Note on `updated_at`:** The `ON CONFLICT` clause sets `updated_at = NOW()` on update but the `INSERT` path relies on the column default (`DEFAULT NOW()`). The `updated_at` is not in the VALUES tuple — instead, append it to the SQL as a literal. Actually, since `execute_values` requires matching column count, add `NOW()` to the template:
-
-Use the `template` parameter of `execute_values`:
-```python
-execute_values(
-    cur,
-    "INSERT INTO practices (..., updated_at) VALUES %s ON CONFLICT ...",
-    values,
-    template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
-    page_size=100,
-)
-```
-
 ### 4c. CLI entry point and Makefile target
 
 **CLI in `api/ingestion/ingest_npi.py`:**
 
 ```python
-import argparse
-
 def main():
     parser = argparse.ArgumentParser(description="Ingest NPI data into practices table")
-    parser.add_argument("--data-path", default="../data/npi_full.csv", help="Path to NPI CSV file")
-    parser.add_argument("--filter-only", action="store_true", help="Filter and transform only, skip geocoding/embedding/upsert")
+    parser.add_argument("--data-path", default="../data/npi_full.csv")
+    parser.add_argument("--full", action="store_true", help="Re-filter CSV from scratch")
+    parser.add_argument("--filter-only", action="store_true", help="Skip geocoding/embedding/upsert")
     args = parser.parse_args()
 
-    # 1. Filter + transform
-    practices = filter_and_transform(args.data_path)
+    if not args.full and os.path.exists(JSONL_PATH):
+        practices = load_jsonl(JSONL_PATH)
+    else:
+        practices = filter_and_transform(args.data_path)
+        write_jsonl(practices, JSONL_PATH)
 
     if args.filter_only:
-        write_jsonl(practices, "../data/npi_practices.jsonl")
-        print(f"Wrote {len(practices)} practices to data/npi_practices.jsonl")
         return
 
-    # 2. Geocode + neighborhood enrichment
-    geocode_results = geocode_practices(practices, "../data/npi_geocoded.json")
-    neighborhoods = load_neighborhoods("../data/sf_neighborhoods.geojson")
+    geocode_results = geocode_practices(practices, GEOCODE_CACHE_PATH)
+    neighborhoods = load_neighborhoods(NEIGHBORHOODS_PATH)
     enrich_with_neighborhoods(practices, geocode_results, neighborhoods)
+    for practice in practices:
+        practice["description"] = compose_description(practice)
+    write_jsonl(practices, JSONL_PATH)
 
-    # 3. Compose descriptions
-    for p in practices:
-        p["description"] = compose_description(p)
-
-    # 4. Write JSONL (with descriptions now populated)
-    write_jsonl(practices, "../data/npi_practices.jsonl")
-
-    # 5. Generate embeddings
-    embed_practices(practices)
-
-    # 6. Upsert to database
     conn = get_connection()
-    upsert_practices(conn, practices)
+    already_embedded = fetch_embedded_npi_numbers(conn)
+    pending = [p for p in practices if p["npi_number"] not in already_embedded]
+    print(f"Embedding {len(pending)} practices ({len(already_embedded)} already done)...")
+    embed_practices(pending, conn)
     conn.close()
-
-    print(f"Ingested {len(practices)} practices.")
-
-if __name__ == "__main__":
-    main()
 ```
 
 **Makefile target:**
 
 ```makefile
 ingest-npi:
-	cd api && .venv/bin/python -m ingestion.ingest_npi --data-path ../data/npi_full.csv
+    @echo "Requires SSH tunnel (make tunnel)."
+    cd api && .venv/bin/python -m ingestion.ingest_npi --data-path ../data/npi_full.csv
 ```
 
 ### Verification
 
+Run `make verify-npi` (see Step 5). Additionally:
+
 1. `make ingest-npi` completes without error.
-2. Record count: `SELECT COUNT(*) FROM practices;` — expect ~500-2,000.
-3. All embeddings present: `SELECT COUNT(*) FROM practices WHERE embedding IS NULL;` — expect 0.
-4. All have embedding_model: `SELECT DISTINCT embedding_model FROM practices;` — expect one nomic-embed-text version string.
-5. Neighborhood coverage: `SELECT COUNT(*) FROM practices WHERE neighborhood != '';` — expect 80%+ of total.
-6. Neighborhood distribution: `SELECT neighborhood, COUNT(*) FROM practices GROUP BY neighborhood ORDER BY COUNT(*) DESC;` — expect recognizable SF neighborhoods.
-7. Services check: `SELECT DISTINCT unnest(services) FROM practices;` — expect only slugs from `TAXONOMY_TO_SERVICE`.
-8. Spot-check: `SELECT name, address_city, neighborhood, services, specialties FROM practices LIMIT 10;` — verify field mapping.
-9. Idempotency: run `make ingest-npi` a second time, verify record count unchanged.
-10. `make verify` still passes.
-
-### Deviations
-
-**Module extraction:** `build_embedding_input` and `embed_practices` were extracted to `api/ingestion/embedding.py` and `upsert_practices` + `fetch_embedded_npi_numbers` to `api/ingestion/upsert.py`, matching the pattern of `geocoding.py` and `neighborhoods.py`. `ingest_npi.py` imports from all four modules.
-
-**Per-batch upsert for resumability:** The plan embedded all practices then upserted in one call. Instead, `embed_practices` accepts a `conn` and calls `upsert_practices` after each batch of 50. On restart, `main()` queries `fetch_embedded_npi_numbers()` and skips already-embedded NPIs — embedding the full ~12k records takes ~4 hours against Ollama, so crash recovery without re-doing completed work was essential.
-
-**`credentials` field name (plural):** `build_embedding_input` uses `p.get('credentials', '')` (plural) to match the field name established in Step 2.
-
-**`verify_setup.py` moved and converted:** Moved from `api/scripts/verify_setup.py` to `api/verify/verify_infra.py` and rewritten as a pytest file. `make verify-infra` runs it. `make verify` now runs `verify-infra` and `verify-npi` in sequence.
-
-**`verify/npi_ingestion.py` added (Step 5 absorbed):** Post-ingestion verification was implemented as a pytest file in `api/verify/npi_ingestion.py` rather than as an inline Makefile script. Unit/integration tests for ingestion functions were added to `api/tests/test_ingest_npi.py`. The `verify/` directory is the convention for all scripts that validate a running system against the dev DB.
-
-**Similarity threshold:** `verify_infra.py` embedding roundtrip test uses a threshold of 0.3 (not 0.5) — nomic-embed-text returned 0.47 for the test query pair, which is a valid result below 0.5.
+2. Idempotency: run `make ingest-npi` a second time, verify record count unchanged.
+3. `make verify` still passes.
 
 ---
 
 ## Step 5: Verification targets
 
-Add a `verify-npi` Makefile target for quick post-ingestion validation.
+Verification scripts live in `api/verify/` — separate from `api/tests/`, which is for unit and integration tests against the test database. The `verify/` convention is for scripts that validate a running system against `nec_rag_dev`.
 
-**Makefile addition:**
+### 5a. Infrastructure verification
+
+**File:** `api/verify/verify_infra.py`
+
+Pytest-based end-to-end check of all infrastructure components. Runs against `nec_rag_dev`:
+
+- Postgres connection
+- pgvector extension installed
+- Ollama returns 768-dimensional embeddings
+- Embedding roundtrip: insert a test practice, query by similarity, verify similarity > 0.3, clean up
+
+Note: nomic-embed-text similarity scores for related-but-differently-worded sentences typically land in the 0.4–0.5 range, so 0.3 is the appropriate floor for this sanity check.
+
+**Makefile target:**
+
+```makefile
+verify-infra:
+    @echo "Requires SSH tunnel (make tunnel)."
+    cd api && .venv/bin/pytest verify/verify_infra.py -v
+```
+
+### 5b. NPI ingestion verification
+
+**File:** `api/verify/npi_ingestion.py`
+
+Pytest-based post-ingestion validation against `nec_rag_dev`. Checks:
+
+- Practices exist
+- All rows have embeddings (768-dimensional) and a consistent `embedding_model`
+- Services contain only valid slugs from `TAXONOMY_TO_SERVICE`
+- Specialties are empty for all NPI rows
+- 80%+ neighborhood coverage
+- All rows have `address_city = 'San Francisco'` and `address_state = 'CA'`
+- No duplicate NPI numbers
+- No empty names
+
+**Makefile target:**
 
 ```makefile
 verify-npi:
-	@echo "Checking NPI ingestion results..."
-	@cd api && .venv/bin/python -c "\
-		from db.connection import get_connection; \
-		conn = get_connection(); cur = conn.cursor(); \
-		cur.execute('SELECT COUNT(*) FROM practices'); total = cur.fetchone()[0]; \
-		cur.execute(\"SELECT COUNT(*) FROM practices WHERE neighborhood != ''\"); enriched = cur.fetchone()[0]; \
-		cur.execute('SELECT COUNT(*) FROM practices WHERE embedding IS NOT NULL'); embedded = cur.fetchone()[0]; \
-		print(f'  Total practices: {total}'); \
-		print(f'  With neighborhood: {enriched} ({100*enriched//max(total,1)}%%)'); \
-		print(f'  With embedding: {embedded}'); \
-		cur.execute('SELECT neighborhood, COUNT(*) FROM practices GROUP BY neighborhood ORDER BY COUNT(*) DESC LIMIT 10'); \
-		print('  Top neighborhoods:'); \
-		[print(f'    {r[0] or \"(none)\"}: {r[1]}') for r in cur.fetchall()]; \
-		conn.close()"
+    @echo "Requires SSH tunnel (make tunnel)."
+    cd api && .venv/bin/pytest verify/npi_ingestion.py -v
 ```
+
+### 5c. Combined verify target
+
+`make verify` runs all verification scripts in sequence:
+
+```makefile
+verify: verify-infra verify-npi
+```
+
+### 5d. Unit and integration tests for ingestion functions
+
+**File:** `api/tests/test_ingest_npi.py`
+
+Tests run against `nec_rag_test` (the disposable test database created and dropped by the existing `conftest.py` fixture). Covers:
+
+- `_title_address` — ordinal suffix correction
+- `transform_npi_row` — individual provider, organization, multi-taxonomy, zip trimming
+- `filter_and_transform` — exclusion rules (deactivated, wrong city, no matching taxonomy)
+- `compose_description` — with and without neighborhood
+- `build_embedding_input` — description + services + professionals
+- `embed_practices` — mocked Ollama; verifies embedding and model version are attached and upsert is called per batch
+- `upsert_practices` / `fetch_embedded_npi_numbers` — real DB via `db_conn` fixture; idempotency and field updates
 
 ### Verification
 
-1. `make verify-npi` prints counts and neighborhood distribution.
-2. All numbers look reasonable per acceptance criteria.
+1. `make verify-infra` passes (all infra components reachable).
+2. `make verify-npi` passes (all ingestion acceptance criteria met).
+3. `make test` passes (unit and integration tests against nec_rag_test).
 
 ---
 
@@ -619,27 +620,36 @@ verify-npi:
 |------|--------|-------------|
 | `api/requirements.txt` | Modify | Add `shapely==2.*` |
 | `api/db/migrations/0002_add_neighborhood.sql` | Create | Add `neighborhood` column + index to practices |
-| `api/embeddings.py` | Create | Shared embedding generation utility (extracted from verify_setup.py) |
-| `api/scripts/verify_setup.py` | Modify | Import `generate_embedding` from shared module |
-| `api/ingestion/ingest_npi.py` | Create | Core ingestion logic: filter, transform, geocode, enrich, embed, upsert |
-| `data/sf_neighborhoods.geojson` | Create | SF neighborhood boundaries from DataSF (committed) |
+| `api/http_utils.py` | Create | Shared HTTP retry utilities used by embeddings and geocoding |
+| `api/embeddings.py` | Create | Shared embedding generation utility |
+| `api/scripts/apply_migrations.py` | Create | Migration runner extracted from Makefile inline Python |
+| `api/ingestion/ingest_npi.py` | Create | Filter, transform, compose description, CLI entry point |
+| `api/ingestion/geocoding.py` | Create | Census Geocoder batch call and cache |
+| `api/ingestion/neighborhoods.py` | Create | SF neighborhood polygon load and point-in-polygon lookup |
+| `api/ingestion/embedding.py` | Create | Embedding input construction and per-batch embed+upsert |
+| `api/ingestion/upsert.py` | Create | `upsert_practices` and `fetch_embedded_npi_numbers` |
+| `api/verify/verify_infra.py` | Create | End-to-end infrastructure verification (pytest) |
+| `api/verify/npi_ingestion.py` | Create | Post-ingestion data verification against nec_rag_dev (pytest) |
+| `api/tests/test_ingest_npi.py` | Create | Unit and integration tests for ingestion functions |
+| `data/sf_neighborhoods.geojson` | Create | SF neighborhood boundaries from codeforamerica/click_that_hood (committed) |
 | `.gitignore` | Modify | Add `data/npi_geocoded.json` and `data/npi_practices.jsonl` |
-| `Makefile` | Modify | Add `ingest-npi` and `verify-npi` targets |
+| `Makefile` | Modify | Add `ingest-npi`, `verify-infra`, `verify-npi` targets; `verify` runs both |
 
 ---
 
 ## Acceptance criteria
 
-- The practices table contains NPI records filtered to SF County behavioral health providers (expected: ~500-2,000 records).
+- The practices table contains NPI records filtered to SF County behavioral health providers (~12,775 records).
 - Every row has a non-null `embedding` column (768-dimensional vector).
 - Every row has a non-null `embedding_model` column identifying the nomic-embed-text version used.
 - At least 80% of rows have a non-empty `neighborhood` column.
 - `services` arrays contain slugs from `TAXONOMY_TO_SERVICE` — no raw taxonomy codes.
 - `specialties` arrays are empty (`[]`) for all NPI-sourced records.
 - Re-running the ingestion produces no duplicate records (upsert idempotency).
+- Interrupting and restarting the ingestion resumes from the last completed batch.
 - `make ingest-npi` completes without error.
-- `make verify-npi` shows recognizable SF neighborhood names with plausible counts.
-- `make verify` continues to pass after extracting the shared embedding module.
+- `make verify` passes (infra + npi checks).
+- `make test` passes.
 
 ---
 
@@ -649,4 +659,4 @@ verify-npi:
 - [x] Step 2: NPI file filtering and Practice transform
 - [x] Step 3: Neighborhood enrichment (geocoding + point-in-polygon)
 - [x] Step 4: Embedding generation and database upsert (includes CLI + Makefile)
-- [x] Step 5: Verification targets (absorbed into Step 4 — see deviations)
+- [x] Step 5: Verification targets
