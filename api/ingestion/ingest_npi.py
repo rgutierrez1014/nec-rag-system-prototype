@@ -1,8 +1,13 @@
 import argparse
 import csv
+import io
 import json
 import os
 import re
+import time
+
+import httpx
+from shapely.geometry import Point, shape
 
 
 TAXONOMY_TO_SERVICE = {
@@ -108,6 +113,135 @@ def write_jsonl(practices: list[dict], output_path: str) -> None:
             f.write(json.dumps(practice) + "\n")
 
 
+# --- Geocoding ---
+
+_SUITE_RE = re.compile(r'\b(ste|suite|unit|apt|#)\s*\S+$', re.IGNORECASE)
+_CENSUS_GEOCODER_URL = "https://geocoding.geo.census.gov/geocoder/geographies/addressbatch"
+
+
+def _strip_suite_number(address: str) -> str:
+    return _SUITE_RE.sub('', address).strip()
+
+
+def _call_census_batch_geocoder(csv_content: str, retries: int = 3) -> dict[str, tuple[float, float]]:
+    """Submit a batch geocoding request. Returns {npi_number: (lat, lon)} for matched records."""
+    delay = 2
+    for attempt in range(retries):
+        try:
+            response = httpx.post(
+                _CENSUS_GEOCODER_URL,
+                data={
+                    "benchmark": "Public_AR_Current",
+                    "vintage": "Current_Current",
+                    "returntype": "geographies",
+                },
+                files={"addressFile": ("batch.csv", csv_content.encode(), "text/csv")},
+                timeout=300.0,
+            )
+            response.raise_for_status()
+            break
+        except (httpx.HTTPError, httpx.TimeoutException) as e:
+            if attempt == retries - 1:
+                raise
+            print(f"  Geocoder attempt {attempt + 1} failed ({e}), retrying in {delay}s...")
+            time.sleep(delay)
+            delay *= 2
+
+    results = {}
+    reader = csv.reader(io.StringIO(response.text))
+    for row in reader:
+        if len(row) < 7:
+            continue
+        npi_number = row[0].strip()
+        match_indicator = row[2].strip()
+        if match_indicator != "Match":
+            continue
+        try:
+            lon = float(row[5].strip())
+            lat = float(row[6].strip())
+            results[npi_number] = (lat, lon)
+        except (ValueError, IndexError):
+            continue
+    return results
+
+
+def geocode_practices(practices: list[dict], cache_path: str) -> dict[str, tuple[float, float]]:
+    """Batch geocode practices via Census Geocoder. Returns {npi_number: (lat, lon)}."""
+    cache: dict[str, tuple[float, float]] = {}
+    if os.path.exists(cache_path):
+        with open(cache_path) as f:
+            raw = json.load(f)
+        cache = {k: tuple(v) for k, v in raw.items()}  # type: ignore[assignment]
+
+    uncached = [p for p in practices if p["npi_number"] not in cache]
+    if not uncached:
+        print(f"  All {len(cache)} geocoding results loaded from cache.")
+        return cache
+
+    print(f"  Geocoding {len(uncached)} practices (cache has {len(cache)})...")
+    csv_lines = [f'{p["npi_number"]},{_strip_suite_number(p["address_1"])},{p["address_city"]},{p["address_state"]},{p["address_zip"]}' for p in uncached]
+    new_results = _call_census_batch_geocoder("\n".join(csv_lines))
+    cache.update(new_results)
+
+    with open(cache_path, "w") as f:
+        json.dump(cache, f)
+
+    matched = sum(1 for p in uncached if p["npi_number"] in new_results)
+    print(f"  Geocoded {len(uncached)}: {matched} matched, {len(uncached) - matched} unmatched.")
+    return cache
+
+
+# --- Neighborhood enrichment ---
+
+def load_neighborhoods(geojson_path: str) -> list[tuple[str, object]]:
+    """Load SF neighborhood polygons. Returns [(name, polygon), ...]."""
+    with open(geojson_path) as f:
+        data = json.load(f)
+    return [
+        (feature["properties"]["name"], shape(feature["geometry"]))
+        for feature in data["features"]
+    ]
+
+
+def lookup_neighborhood(lat: float, lon: float, neighborhoods: list[tuple[str, object]]) -> str:
+    point = Point(lon, lat)
+    for name, polygon in neighborhoods:
+        if polygon.contains(point):  # type: ignore[union-attr]
+            return name
+    return ""
+
+
+def enrich_with_neighborhoods(
+    practices: list[dict],
+    geocode_results: dict[str, tuple[float, float]],
+    neighborhoods: list[tuple[str, object]],
+) -> None:
+    """Mutates each practice dict in-place, setting neighborhood."""
+    for practice in practices:
+        coords = geocode_results.get(practice["npi_number"])
+        if coords:
+            practice["neighborhood"] = lookup_neighborhood(coords[0], coords[1], neighborhoods)
+
+
+# --- Description composition ---
+
+def compose_description(practice: dict) -> str:
+    name = practice["name"]
+    services_text = " and ".join(slug.replace("-", " ") for slug in practice["services"])
+    neighborhood = practice["neighborhood"]
+
+    if neighborhood:
+        return (
+            f"{name} is a {services_text} practice located in the "
+            f"{neighborhood} neighborhood of San Francisco "
+            f"({practice['address_1']}, {practice['address_zip']})."
+        )
+    return (
+        f"{name} is a {services_text} practice located in "
+        f"San Francisco, CA ({practice['address_1']}, {practice['address_zip']})."
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ingest NPI data into practices table")
     parser.add_argument("--data-path", default="../data/npi_full.csv", help="Path to NPI CSV file")
@@ -126,7 +260,21 @@ def main():
         print(f"Wrote {len(practices)} practices to data/npi_practices.jsonl")
         return
 
-    print(f"Filtered {len(practices)} practices. Geocoding, embedding, and upsert not yet implemented (Steps 3–4).")
+    # geocode + neighborhood enrichment
+    print("Geocoding practices...")
+    geocode_results = geocode_practices(practices, "../data/npi_geocoded.json")
+    print("Loading SF neighborhoods...")
+    neighborhoods = load_neighborhoods("../data/sf_neighborhoods.geojson")
+    enrich_with_neighborhoods(practices, geocode_results, neighborhoods)
+
+    # Compose descriptions (requires neighborhood)
+    for practice in practices:
+        practice["description"] = compose_description(practice)
+
+    write_jsonl(practices, "../data/npi_practices.jsonl")
+    print(f"Wrote {len(practices)} practices to data/npi_practices.jsonl")
+
+    print("Embedding and upsert not yet implemented (Step 4).")
 
 
 if __name__ == "__main__":
