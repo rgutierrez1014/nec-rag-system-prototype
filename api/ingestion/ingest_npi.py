@@ -4,13 +4,11 @@ import json
 import os
 import re
 
-from psycopg2.extras import Json, execute_values
-from pgvector.psycopg2 import register_vector
-
 from db.connection import get_connection
 from ingestion.embedding import embed_practices
 from ingestion.geocoding import geocode_practices
 from ingestion.neighborhoods import enrich_with_neighborhoods, load_neighborhoods
+from ingestion.upsert import fetch_embedded_npi_numbers
 
 
 TAXONOMY_TO_SERVICE = {
@@ -138,58 +136,6 @@ def compose_description(practice: dict) -> str:
     )
 
 
-def upsert_practices(conn, practices: list[dict]) -> None:
-    register_vector(conn)
-    cur = conn.cursor()
-
-    values = [
-        (
-            p["npi_number"], p["name"], p["description"], p["practice_type"],
-            p["address_1"], p["address_city"], p["address_state"], p["address_zip"],
-            p["neighborhood"],
-            p["services"], p["specialties"], p["presence_types"],
-            Json(p["professionals"]),
-            p["embedding"], p["embedding_model"],
-        )
-        for p in practices
-    ]
-
-    execute_values(
-        cur,
-        """
-        INSERT INTO practices (
-            npi_number, name, description, practice_type,
-            address_1, address_city, address_state, address_zip,
-            neighborhood,
-            services, specialties, presence_types, professionals,
-            embedding, embedding_model,
-            updated_at
-        ) VALUES %s
-        ON CONFLICT (npi_number) DO UPDATE SET
-            name = EXCLUDED.name,
-            description = EXCLUDED.description,
-            address_1 = EXCLUDED.address_1,
-            address_city = EXCLUDED.address_city,
-            address_state = EXCLUDED.address_state,
-            address_zip = EXCLUDED.address_zip,
-            neighborhood = EXCLUDED.neighborhood,
-            services = EXCLUDED.services,
-            specialties = EXCLUDED.specialties,
-            presence_types = EXCLUDED.presence_types,
-            professionals = EXCLUDED.professionals,
-            embedding = EXCLUDED.embedding,
-            embedding_model = EXCLUDED.embedding_model,
-            updated_at = NOW()
-        """,
-        values,
-        template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
-        page_size=100,
-    )
-
-    conn.commit()
-    cur.close()
-
-
 JSONL_PATH = "../data/npi_practices.jsonl"
 GEOCODE_CACHE_PATH = "../data/npi_geocoded.json"
 NEIGHBORHOODS_PATH = "../data/sf_neighborhoods.geojson"
@@ -234,15 +180,14 @@ def main():
     write_jsonl(practices, JSONL_PATH)
     print(f"Wrote enriched practices to {JSONL_PATH}.")
 
-    print("Generating embeddings...")
-    embed_practices(practices)
-
-    print("Upserting practices to database...")
     conn = get_connection()
-    upsert_practices(conn, practices)
+    already_embedded = fetch_embedded_npi_numbers(conn)
+    pending = [p for p in practices if p["npi_number"] not in already_embedded]
+    print(f"Embedding {len(pending)} practices ({len(already_embedded)} already done)...")
+    embed_practices(pending, conn)
     conn.close()
 
-    print(f"Ingested {len(practices)} practices.")
+    print(f"Ingested {len(pending)} practices ({len(already_embedded)} skipped).")
 
 
 if __name__ == "__main__":
