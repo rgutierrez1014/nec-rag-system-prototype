@@ -128,17 +128,27 @@ def get_embedding_model_version() -> str:
 Update `api/scripts/verify_setup.py` to import from the shared module:
 
 ```python
-from embeddings import generate_embedding
+from embeddings import generate_embedding, EMBEDDING_MODEL
 ```
 
 Remove the duplicated `generate_embedding()`, `OLLAMA_BASE_URL`, and `EMBEDDING_MODEL` from `verify_setup.py`.
 
+### 1f. Extract apply-migrations logic to a script (added during implementation)
+
+The inline Python in the `apply-migrations` Makefile target was extracted to `api/scripts/apply_migrations.py`. The script applies pending migrations one at a time and prints per-migration status (Django-style output). The Makefile target is now a one-liner calling this script.
+
 ### Verification
 
 1. `make setup-api` completes without error (shapely installs).
-2. `make apply-migrations` adds the neighborhood column.
-3. `data/sf_neighborhoods.geojson` exists and contains GeoJSON features with `nhood` property.
+2. `make apply-migrations` adds the neighborhood column and prints per-migration status.
+3. `data/sf_neighborhoods.geojson` exists and contains GeoJSON features with a neighborhood name property.
 4. `make verify` still passes (verify_setup.py uses the shared embedding module).
+
+### Deviations
+
+**1c — Data source:** The plan specified the DataSF Analysis Neighborhoods dataset (`p5b7-5n3h`) with a `nhood` property per feature. That endpoint is broken: the SODA GeoJSON endpoint (`/resource/p5b7-5n3h.geojson`) returns 41 features with `"geometry": null` and `"properties": {}` (dataset registered in the catalog but no row data); the geospatial export endpoint (`/api/geospatial/p5b7-5n3h?method=export&type=GeoJSON`) returns a truncated 53-byte file despite a 200 response. Used the [codeforamerica/click_that_hood](https://github.com/codeforamerica/click_that_hood) SF GeoJSON instead — valid polygons for 37 SF neighborhoods, but the property name is `name` (not `nhood`). **The `load_neighborhoods()` function in Step 3 must use `feature["properties"]["name"]` instead of `feature["properties"]["nhood"]`.**
+
+**1f — apply-migrations script:** The inline Python in the Makefile `apply-migrations` target was extracted to `api/scripts/apply_migrations.py` (not in the original plan). The script is self-contained (does not import from `setup_db.py`) and applies migrations one at a time within a single lock, printing Django-style per-migration status. The `api/scripts/apply_migrations.py` file should be added to the files summary.
 
 ---
 
@@ -595,7 +605,7 @@ verify-npi:
 
 ## Completion checklist
 
-- [ ] Step 1: Prerequisites — shapely dependency, data directory, neighborhood migration, shared embedding utility
+- [x] Step 1: Prerequisites — shapely dependency, data directory, neighborhood migration, shared embedding utility
 - [ ] Step 2: NPI file filtering and Practice transform
 - [ ] Step 3: Neighborhood enrichment (geocoding + point-in-polygon)
 - [ ] Step 4: Embedding generation and database upsert (includes CLI + Makefile)
