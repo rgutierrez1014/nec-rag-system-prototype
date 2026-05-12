@@ -34,7 +34,7 @@ define API_KILL_CMDS
 	fi
 endef
 
-.PHONY: start-dev stop-dev logs tunnel tunnel-kill tunnel-restart api frontend status setup-api setup-db apply-migrations verify test
+.PHONY: start-dev stop-dev logs tunnel tunnel-kill tunnel-restart api frontend status setup-api setup-db apply-migrations verify test ingest-npi
 
 # ── Dev lifecycle ──────────────────────────────────────────────
 
@@ -169,3 +169,7 @@ verify:
 test:
 	@echo "Requires SSH tunnel (make tunnel)."
 	cd api && .venv/bin/pytest tests/ -v
+
+ingest-npi:
+	@echo "Requires SSH tunnel (make tunnel)."
+	cd api && .venv/bin/python -m ingestion.ingest_npi --data-path ../data/npi_full.csv
