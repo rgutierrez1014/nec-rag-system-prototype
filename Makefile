@@ -161,13 +161,7 @@ setup-db:
 	cd api && .venv/bin/python -m scripts.setup_db $(db)
 
 apply-migrations:
-	@echo "Applying pending migrations to $(db)..."
-	cd api && .venv/bin/python -c "\
-		import os; from yoyo import get_backend, read_migrations; \
-		url = 'postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):$(POSTGRES_PORT)/$(db)'; \
-		backend = get_backend(url); migrations = read_migrations('db/migrations'); \
-		backend.lock(); backend.apply_migrations(backend.to_apply(migrations)); \
-		print('Migrations applied to $(db)')"
+	cd api && .venv/bin/python -m scripts.apply_migrations $(db)
 
 verify:
 	cd api && .venv/bin/python -m scripts.verify_setup
