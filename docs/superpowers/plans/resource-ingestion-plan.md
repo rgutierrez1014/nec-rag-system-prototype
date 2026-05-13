@@ -208,6 +208,24 @@ def save_extracted_content(url: str, content: str) -> str:
     return path
 ```
 
+### Known caveats and future considerations
+
+**Trafilatura/Playwright:**
+
+- **Title extraction is fragile.** Calling `extract()` twice (once for `txt`, once for `xml`) to get the title is inefficient and the XML parsing can miss it. `trafilatura.bare_extraction()` returns a structured dict with `title`, `date`, etc. directly — worth swapping if title quality matters.
+- **`lxml_html_clean` may need to be explicit.** Trafilatura 2.x split it out as a separate package. It's a transitive dependency but some environments need it pinned in `requirements.txt` to avoid version conflicts.
+- **`networkidle` in Playwright is fragile.** Some pages never fully settle (analytics pings, live chat widgets). May need to fall back to `domcontentloaded` or a fixed `wait_for_timeout` for certain sites.
+- **No rate limiting.** The current loop hits URLs sequentially with no delay. Most sites won't care for a 50-100 URL list, but some (Understood.org, government sites) throttle. Add a small `time.sleep(1)` between fetches if 429s appear.
+- **User-agent blocking.** `trafilatura.fetch_url()` sends a recognizable UA. Some sites block scrapers — Playwright with a realistic UA tends to get further, which is partly why the fallback exists.
+
+**Manual extraction fallback (not yet built):**
+
+If scraping fails for a URL that's needed, two escape hatches are possible without much new code:
+- *Saved HTML file:* `_parse_with_trafilatura(html, url)` already accepts raw HTML — a small helper script that reads a saved `.html` file and calls it would skip the fetch step entirely.
+- *Copy/paste plain text:* Clean text can skip extraction and go straight into `chunk_content()` with manually supplied metadata (url, org_name, etc.).
+
+Don't build this until the first extraction failure on a URL that's actually needed — the right interface (file path arg, stdin, `data/manual/` drop folder) will be clearer then.
+
 ### Files
 
 | File | Action | Description |
@@ -236,6 +254,11 @@ Extraction functions that hit the network are tested via the integration test in
 ```bash
 cd api && .venv/bin/pytest tests/test_extract.py -v
 ```
+
+### Deviations
+
+- **`conftest.py` fix:** Removed `autouse=True` from the `test_database` session fixture and added it as an explicit dependency of `db_conn`. The original `autouse=True` caused the DB setup to run for every test, breaking pure unit tests when the SSH tunnel isn't open. No test logic changed.
+- **Added "Known caveats and future considerations" section** (above) based on review of Trafilatura/Playwright behavior and a discussion of a potential manual extraction fallback.
 
 ---
 
@@ -960,7 +983,7 @@ make verify-resources
 
 - [x] Step 1: Refactor upsert module into a package
 - [x] Step 2: Add dependencies (Trafilatura + Playwright)
-- [ ] Step 3: Content extraction module
+- [x] Step 3: Content extraction module
 - [ ] Step 4: Chunking module
 - [ ] Step 5: Resource chunks upsert
 - [ ] Step 6: Main ingestion module + Makefile target

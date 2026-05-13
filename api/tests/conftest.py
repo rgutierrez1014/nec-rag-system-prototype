@@ -16,7 +16,7 @@ TEST_DB = "nec_rag_test"
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "..", "db", "migrations")
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def test_database():
     """Create nec_rag_test, apply migrations, yield, then drop it."""
     conn = psycopg2.connect(
@@ -61,7 +61,7 @@ def test_database():
 
 
 @pytest.fixture
-def db_conn():
+def db_conn(test_database):
     """Per-test connection to nec_rag_test. Rolls back on teardown."""
     conn = psycopg2.connect(
         host=POSTGRES_HOST,
