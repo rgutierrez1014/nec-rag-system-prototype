@@ -958,7 +958,7 @@ make verify-resources
 
 ## Completion checklist
 
-- [ ] Step 1: Refactor upsert module into a package
+- [x] Step 1: Refactor upsert module into a package
 - [ ] Step 2: Add dependencies (Trafilatura + Playwright)
 - [ ] Step 3: Content extraction module
 - [ ] Step 4: Chunking module
