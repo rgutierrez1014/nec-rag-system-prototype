@@ -86,7 +86,7 @@ setup-api:
 
 | File | Action | Description |
 |------|--------|-------------|
-| `api/requirements.txt` | Modify | Add trafilatura, playwright |
+| `api/requirements.txt` | Modify | Add trafilatura, lxml_html_clean, playwright |
 | `Makefile` | Modify | Add `playwright install chromium` to `setup-api` |
 
 ### Verification
@@ -959,7 +959,7 @@ make verify-resources
 ## Completion checklist
 
 - [x] Step 1: Refactor upsert module into a package
-- [ ] Step 2: Add dependencies (Trafilatura + Playwright)
+- [x] Step 2: Add dependencies (Trafilatura + Playwright)
 - [ ] Step 3: Content extraction module
 - [ ] Step 4: Chunking module
 - [ ] Step 5: Resource chunks upsert

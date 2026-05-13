@@ -153,6 +153,7 @@ status:
 setup-api:
 	cd api && python3 -m venv .venv
 	cd api && .venv/bin/pip install -r requirements-dev.txt
+	cd api && .venv/bin/playwright install chromium
 
 db ?= nec_rag_dev
 

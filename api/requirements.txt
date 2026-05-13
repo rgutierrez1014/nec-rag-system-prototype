@@ -9,6 +9,11 @@ yoyo-migrations==8.*
 # Ingestion (Step 2)
 shapely==2.*
 
+# Ingestion — resource extraction (Step 3)
+trafilatura==2.*
+lxml_html_clean  # required by trafilatura's justext dependency (not auto-installed)
+playwright==1.*
+
 # Embeddings and ML (Step 5 will add sentence-transformers, rank-bm25)
 # Listed here as comments for visibility; install when needed
 
