@@ -984,7 +984,7 @@ make verify-resources
 - [x] Step 1: Refactor upsert module into a package
 - [x] Step 2: Add dependencies (Trafilatura + Playwright)
 - [x] Step 3: Content extraction module
-- [ ] Step 4: Chunking module
+- [x] Step 4: Chunking module
 - [ ] Step 5: Resource chunks upsert
 - [ ] Step 6: Main ingestion module + Makefile target
 - [ ] Step 7: Spot-check verification script
