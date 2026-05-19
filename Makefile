@@ -171,8 +171,13 @@ verify-infra:
 	cd api && .venv/bin/pytest verify/verify_infra.py -v
 
 test:
+ifdef TEST_ARGS
+	@echo "Running with SSH tunnel..."
+	cd api && .venv/bin/pytest $(TEST_ARGS)
+else
 	@echo "Requires SSH tunnel (make tunnel)."
 	cd api && .venv/bin/pytest tests/ -v
+endif
 
 ingest-npi:
 	@echo "Requires SSH tunnel (make tunnel)."

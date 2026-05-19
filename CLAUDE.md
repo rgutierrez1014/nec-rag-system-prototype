@@ -117,6 +117,7 @@ make start-dev   # tunnel + FastAPI on :8000
 make stop-dev    # shut everything down
 make verify      # end-to-end Ollama → pgvector check (requires tunnel)
 make test        # integration tests — creates/drops nec_rag_test automatically (requires tunnel)
+make test TEST_ARGS="test/test_chunking.py -v"  # pass args directly to pytest, run a single test, etc.
 ```
 
 **Three databases on one VPS Postgres instance:**
